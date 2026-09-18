@@ -12,6 +12,16 @@
  */
 const WEBLLM_CDN = 'https://esm.run/@mlc-ai/web-llm';
 
+/**
+ * Speed tiers offered in settings. Smaller is dramatically faster on modest
+ * hardware; "balanced" is the default.
+ */
+export const SPEED_TIERS = [
+  { id: 'fastest', label: 'Fastest — smallest model, ~0.4 GB', models: ['Qwen2.5-0.5B-Instruct-q4f16_1-MLC', 'Qwen2-0.5B-Instruct-q4f16_1-MLC', 'TinyLlama-1.1B-Chat-v1.0-q4f16_1-MLC'] },
+  { id: 'balanced', label: 'Balanced — ~1 GB (default)', models: ['Qwen2.5-1.5B-Instruct-q4f16_1-MLC', 'Llama-3.2-1B-Instruct-q4f32_1-MLC', 'Llama-3.2-1B-Instruct-q4f16_1-MLC'] },
+  { id: 'smartest', label: 'Smartest — ~2 GB, slowest', models: ['Llama-3.2-3B-Instruct-q4f16_1-MLC', 'gemma-2-2b-it-q4f16_1-MLC', 'Phi-3.5-mini-instruct-q4f16_1-MLC'] },
+];
+
 /** Preferred small models, best-first. Resolved against what WebLLM ships. */
 const PREFERRED = [
   'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
@@ -30,10 +40,17 @@ export function webGpuSupported() {
  * known-good list but falling back to the smallest instruct model avoids
  * hard-coding an id that may have been renamed.
  */
-export function resolveModelId(available, wanted) {
+export function resolveModelId(available, wanted, tier) {
   const ids = (available || []).map((m) => (typeof m === 'string' ? m : m.model_id)).filter(Boolean);
   if (!ids.length) return wanted || PREFERRED[0];
   if (wanted && ids.includes(wanted)) return wanted;
+
+  // Honour the chosen speed tier before the generic preference list.
+  const wantedTier = SPEED_TIERS.find((t) => t.id === tier);
+  if (wantedTier) {
+    for (const id of wantedTier.models) if (ids.includes(id)) return id;
+  }
+
   for (const id of PREFERRED) if (ids.includes(id)) return id;
   // Smallest instruct-tuned model we can find, by the parameter count in its name.
   const scored = ids
@@ -163,7 +180,7 @@ export class LocalBrain {
         throw new Error('Could not download the local AI engine. Check your connection and try again.');
       });
       const available = webllm.prebuiltAppConfig?.model_list || [];
-      this.modelId = resolveModelId(available, this.getSettings().localModel);
+      this.modelId = resolveModelId(available, this.getSettings().localModel, this.getSettings().localSpeed);
 
       this.engine = await webllm.CreateMLCEngine(this.modelId, {
         initProgressCallback: (p) => {
@@ -182,15 +199,26 @@ export class LocalBrain {
   }
 
   /** Same shape as Brain.stream / OfflineBrain.stream. */
-  async stream({ system, messages, tools }, on = {}) {
+  async stream(request, on = {}) {
+    try {
+      return await this.#generate(request, on);
+    } finally {
+      this.on.busy?.(false);
+    }
+  }
+
+  async #generate({ system, messages, tools }, on = {}) {
     const engine = await this.load();
     const chat = toChatMessages(`${system}${buildToolPrompt(tools)}`, messages);
 
+    // Spoken replies are short, and every extra token costs real time on a
+    // small GPU. Tell the UI to stop animating while we generate.
+    this.on.busy?.(true);
     const reply = await engine.chat.completions.create({
       messages: chat,
       stream: true,
       temperature: 0.6,
-      max_tokens: 512,
+      max_tokens: 200,
     });
 
     // Buffer the opening characters: if it turns out to be a tool call we must

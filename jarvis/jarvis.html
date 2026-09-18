@@ -730,6 +730,86 @@ body[data-state="thinking"] .composer {
   50%      { transform: scale(1.06); opacity: 0.9; }
 }
 
+/* --- connectors ---------------------------------------------------------- */
+
+.conn__lead {
+  position: relative;
+  margin: -6px auto 22px;
+  max-width: 62ch;
+  padding: 0 26px;
+  text-align: center;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.conn__grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+  padding: 0 26px 26px;
+  max-height: calc(100vh - 190px);
+  overflow-y: auto;
+}
+
+.conn__card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0) 40%),
+    rgba(12, 20, 32, 0.6);
+  transition: border-color 200ms, opacity 200ms;
+}
+.conn__card.is-off { opacity: 0.45; }
+.conn__card.is-on { border-color: color-mix(in srgb, var(--accent) 38%, transparent); }
+
+.conn__head { display: flex; align-items: center; gap: 10px; }
+.conn__name { font: 600 14px/1 var(--ui); color: var(--text); }
+.conn__blurb { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.conn__eg {
+  margin: 0;
+  font: 400 11.5px/1.5 var(--font);
+  color: color-mix(in srgb, var(--accent) 75%, white);
+}
+
+/* A small switch instead of a raw checkbox. */
+.conn__toggle {
+  margin-left: auto;
+  position: relative;
+  width: 38px;
+  height: 21px;
+  flex: 0 0 38px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition: background 200ms, border-color 200ms;
+}
+.conn__toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 200ms, background 200ms;
+}
+.conn__toggle[aria-checked="true"] {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.conn__toggle[aria-checked="true"]::after {
+  transform: translateX(17px);
+  background: var(--accent);
+}
+
 </style>
 </head>
 <body>
@@ -799,7 +879,11 @@ body[data-state="thinking"] .composer {
   <!-- right column ------------------------------------------------------ -->
   <aside class="panel panel--right">
     <section class="block">
-      <h2 class="block__title">Tasks <span class="badge" id="task-count">0</span></h2>
+      <h2 class="block__title">
+        Tasks
+        <button type="button" class="block__action" id="conn-btn" title="Connectors">links</button>
+        <span class="badge" id="task-count">0</span>
+      </h2>
       <ul class="list" id="tasks"><li class="list__empty">nothing queued</li></ul>
     </section>
 
@@ -834,6 +918,24 @@ body[data-state="thinking"] .composer {
   </div>
 </div>
 
+<!-- connectors ------------------------------------------------------------ -->
+<div class="mind conn" id="conn" hidden>
+  <header class="mind__bar">
+    <div class="mind__title">
+      <span class="mind__eyebrow">connectors</span>
+      <h2>Hand-offs</h2>
+    </div>
+    <button type="button" class="mind__close" id="conn-close" aria-label="Close">esc</button>
+  </header>
+
+  <p class="conn__lead">
+    JARVIS writes it, then opens the real app with everything filled in — you press send.
+    Nothing is sent on your behalf, and no accounts are connected.
+  </p>
+
+  <div class="conn__grid" id="conn-grid"></div>
+</div>
+
 <!-- boot overlay --------------------------------------------------------- -->
 <div class="boot" id="boot">
   <div class="boot__inner">
@@ -866,6 +968,11 @@ body[data-state="thinking"] .composer {
         <option value="local">Local AI — no key, runs in this browser (one-time download)</option>
         <option value="rules">Offline rules — no key, instant, handles the basics</option>
       </select>
+    </label>
+
+    <label class="field" id="field-speed">
+      <span>Local AI size <small>smaller is much faster</small></span>
+      <select id="set-speed"><!-- filled from SPEED_TIERS --></select>
     </label>
 
     <label class="field" id="field-model">
@@ -964,7 +1071,9 @@ const DEFAULTS = {
     name: '',
     clapToDictate: true,     // double-clap starts a capture
     brain: 'auto',           // auto | claude | local (in-browser LLM) | rules
+    connectors: {},          // per-connector on/off; empty means all on
     localModel: '',          // override the in-browser model id
+    localSpeed: 'balanced',  // fastest | balanced | smartest
     speechEngine: 'auto',    // auto | web-speech | vosk (on-device)
     voskModelUrl: '',        // override the default on-device model
   },
@@ -1119,6 +1228,225 @@ const memory = {
   },
 };
 // --- end memory.js ---
+
+// --- connectors.js ---
+/**
+ * Connectors — deep links into apps you already use.
+ *
+ * A browser page can't read your mailbox without a full Google OAuth setup, so
+ * instead of pretending, these hand the work off: JARVIS composes the email,
+ * the event, the search or the message and opens it in the real app with
+ * everything filled in. You stay in control of the send button.
+ *
+ * Every builder is a pure function returning a URL, so they're unit-testable
+ * and there's no way for a malformed argument to silently open something odd.
+ */
+
+/** Format a Date (or ISO string) as the compact UTC stamp Google Calendar wants. */
+function calendarStamp(when) {
+  const d = when instanceof Date ? when : new Date(when);
+  if (Number.isNaN(d.getTime())) throw new Error('invalid date');
+  return `${d.toISOString().replace(/[-:]/g, '').split('.')[0]}Z`;
+}
+
+const enc = (v) => encodeURIComponent(String(v ?? ''));
+
+/**
+ * The registry. Each connector declares the tools it contributes; `build`
+ * turns tool input into a URL to open.
+ */
+const CONNECTORS = {
+  gmail: {
+    name: 'Gmail',
+    blurb: 'Compose an email with the recipient, subject and body already written.',
+    example: '"Jarvis, email sam@example.com about moving Friday’s meeting"',
+    tools: [{
+      name: 'compose_email',
+      description:
+        'Open a new email with the fields pre-filled. Use when the user wants to email, '
+        + 'write to or message someone. The user still presses send themselves.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient email address. Omit if unknown.' },
+          subject: { type: 'string', description: 'Subject line.' },
+          body: { type: 'string', description: 'The message, written out in full.' },
+        },
+        required: ['body'],
+      },
+      build: ({ to = '', subject = '', body = '' }) =>
+        `https://mail.google.com/mail/?view=cm&fs=1&to=${enc(to)}&su=${enc(subject)}&body=${enc(body)}`,
+      say: ({ to }) => `Drafted the email${to ? ` to ${to}` : ''} — it's open, ready to send.`,
+    }],
+  },
+
+  calendar: {
+    name: 'Google Calendar',
+    blurb: 'Create an event with the title, time and details filled in.',
+    example: '"Jarvis, put dentist on the calendar for Tuesday at 3pm"',
+    tools: [{
+      name: 'create_calendar_event',
+      description:
+        'Open a pre-filled new calendar event. Work out the absolute start time yourself '
+        + '(call get_datetime first if the user said something relative like "tomorrow").',
+      input_schema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Event title.' },
+          start: { type: 'string', description: 'Start time as an ISO 8601 timestamp.' },
+          minutes: { type: 'number', description: 'Length in minutes. Defaults to 60.' },
+          details: { type: 'string', description: 'Optional notes.' },
+          location: { type: 'string', description: 'Optional location.' },
+        },
+        required: ['title', 'start'],
+      },
+      build: ({ title, start, minutes = 60, details = '', location = '' }) => {
+        const from = new Date(start);
+        const to = new Date(from.getTime() + Number(minutes) * 60000);
+        const dates = `${calendarStamp(from)}/${calendarStamp(to)}`;
+        return 'https://calendar.google.com/calendar/render?action=TEMPLATE'
+          + `&text=${enc(title)}&dates=${dates}&details=${enc(details)}&location=${enc(location)}`;
+      },
+      say: ({ title }) => `Opened a calendar event for "${title}".`,
+    }],
+  },
+
+  maps: {
+    name: 'Google Maps',
+    blurb: 'Pull up directions to somewhere.',
+    example: '"Jarvis, directions to the nearest hardware store"',
+    tools: [{
+      name: 'get_directions',
+      description: 'Open directions to a place. Use when the user asks how to get somewhere.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          destination: { type: 'string', description: 'Where they are going.' },
+          from: { type: 'string', description: 'Starting point. Omit to use current location.' },
+          mode: { type: 'string', description: 'driving, walking, bicycling or transit.' },
+        },
+        required: ['destination'],
+      },
+      build: ({ destination, from = '', mode = '' }) =>
+        `https://www.google.com/maps/dir/?api=1&destination=${enc(destination)}`
+        + (from ? `&origin=${enc(from)}` : '')
+        + (mode ? `&travelmode=${enc(mode)}` : ''),
+      say: ({ destination }) => `Directions to ${destination} are up.`,
+    }],
+  },
+
+  search: {
+    name: 'Web search',
+    blurb: 'Look something up on the web.',
+    example: '"Jarvis, look up how long to boil an egg"',
+    tools: [{
+      name: 'search_web',
+      description:
+        'Open a web search. Use when the user asks you to look something up, or asks about '
+        + 'current events you cannot possibly know.',
+      input_schema: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'What to search for.' } },
+        required: ['query'],
+      },
+      build: ({ query }) => `https://www.google.com/search?q=${enc(query)}`,
+      say: ({ query }) => `Searching for ${query}.`,
+    }],
+  },
+
+  youtube: {
+    name: 'YouTube',
+    blurb: 'Find music or a video.',
+    example: '"Jarvis, play lo-fi beats on YouTube"',
+    tools: [{
+      name: 'play_video',
+      description: 'Open a YouTube search for something to watch or listen to.',
+      input_schema: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'What to play.' } },
+        required: ['query'],
+      },
+      build: ({ query }) => `https://www.youtube.com/results?search_query=${enc(query)}`,
+      say: ({ query }) => `Pulling up ${query}.`,
+    }],
+  },
+
+  whatsapp: {
+    name: 'WhatsApp',
+    blurb: 'Start a WhatsApp message with the text written.',
+    example: '"Jarvis, WhatsApp mum that I’ll be late"',
+    tools: [{
+      name: 'send_whatsapp',
+      description:
+        'Open WhatsApp with a message pre-written. The user picks the contact and presses send.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          message: { type: 'string', description: 'The message text.' },
+          phone: { type: 'string', description: 'Optional number in international format, digits only.' },
+        },
+        required: ['message'],
+      },
+      build: ({ message, phone = '' }) => {
+        const digits = String(phone).replace(/\D/g, '');
+        return digits
+          ? `https://wa.me/${digits}?text=${enc(message)}`
+          : `https://wa.me/?text=${enc(message)}`;
+      },
+      say: () => 'WhatsApp is open with the message ready.',
+    }],
+  },
+
+  translate: {
+    name: 'Google Translate',
+    blurb: 'Translate a phrase into another language.',
+    example: '"Jarvis, how do I say where is the station in Japanese"',
+    tools: [{
+      name: 'translate_text',
+      description: 'Open a translation of some text into a target language.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', description: 'The text to translate.' },
+          to: { type: 'string', description: 'Target language code, e.g. ja, fr, es.' },
+        },
+        required: ['text', 'to'],
+      },
+      build: ({ text, to }) =>
+        `https://translate.google.com/?sl=auto&tl=${enc(to)}&text=${enc(text)}&op=translate`,
+      say: ({ to }) => `Translated into ${to}.`,
+    }],
+  },
+};
+
+/** Default on/off state — everything on, since nothing here sends anything by itself. */
+function defaultConnectorSettings() {
+  return Object.fromEntries(Object.keys(CONNECTORS).map((id) => [id, true]));
+}
+
+/** Tool definitions (Anthropic shape) for the enabled connectors. */
+function connectorTools(enabled = {}) {
+  const out = [];
+  for (const [id, connector] of Object.entries(CONNECTORS)) {
+    if (enabled[id] === false) continue;
+    for (const tool of connector.tools) {
+      const { build, say, ...definition } = tool;
+      out.push(definition);
+    }
+  }
+  return out;
+}
+
+/** Find the tool implementation behind a name, respecting the enabled set. */
+function findConnectorTool(name, enabled = {}) {
+  for (const [id, connector] of Object.entries(CONNECTORS)) {
+    if (enabled[id] === false) continue;
+    const tool = connector.tools.find((t) => t.name === name);
+    if (tool) return { connectorId: id, connector, tool };
+  }
+  return null;
+}
+// --- end connectors.js ---
 
 // --- tools.js ---
 /**
@@ -1397,11 +1725,33 @@ function createTools(ctx) {
     },
   };
 
+  /** Built-in tools plus whichever connectors are switched on. */
+  function allDefinitions() {
+    return [...defs, ...connectorTools(memory.settings.connectors || {})];
+  }
+
   return {
-    definitions: defs,
+    get definitions() {
+      return allDefinitions();
+    },
 
     /** Run a tool_use block and return its string result. */
     async run(name, input) {
+      // Connector tools build a URL and hand off to the real app.
+      const hit = findConnectorTool(name, memory.settings.connectors || {});
+      if (hit) {
+        try {
+          const url = hit.tool.build(input || {});
+          const parsed = new URL(url);
+          if (parsed.protocol !== 'https:') return 'Refused: connectors only open https links.';
+          window.open(parsed.href, '_blank', 'noopener');
+          ctx.notify?.(`Opened ${hit.connector.name}`);
+          return hit.tool.say?.(input || {}) || `Opened ${hit.connector.name}.`;
+        } catch (err) {
+          return `Could not open ${hit.connector.name}: ${err.message}`;
+        }
+      }
+
       const fn = handlers[name];
       if (!fn) return `Unknown tool "${name}".`;
       try {
@@ -1801,6 +2151,34 @@ function interpret(raw) {
 
   if (/\bbattery|how am i doing on power|system status\b/.test(t)) {
     return { tool: 'system_status', input: {} };
+  }
+
+  // --- connectors: hand off to a real app with everything filled in ---
+
+  if (/\b(email|e-mail|mail)\b/.test(t) && !/\bemail address\b/.test(t)) {
+    const to = (text.match(/[\w.+-]+@[\w-]+\.[\w.]+/) || [''])[0];
+    const about = text.replace(/^.*?\b(about|saying|re)\b\s*/i, '');
+    const body = about && about !== text ? about : text;
+    return { tool: 'compose_email', input: { to, subject: body.slice(0, 60), body } };
+  }
+  if (/\bdirections?\b|\bhow do i get to\b|\bnavigate to\b/.test(t)) {
+    const destination = text.replace(/^.*?\b(directions? to|how do i get to|navigate to)\b\s*/i, '').trim();
+    return destination
+      ? { tool: 'get_directions', input: { destination } }
+      : { text: 'Where do you want to go?' };
+  }
+  if (/\b(play|put on)\b/.test(t) && !/\btimer\b/.test(t)) {
+    const query = text.replace(/^.*?\b(play|put on)\b\s*/i, '').trim();
+    return query ? { tool: 'play_video', input: { query } } : { text: 'Play what?' };
+  }
+  if (/\btranslate\b/.test(t)) {
+    const to = (t.match(/\b(?:in|into|to)\s+([a-z]+)\s*$/) || [])[1] || 'es';
+    const phrase = text.replace(/^.*?\btranslate\b\s*/i, '').replace(/\b(?:in|into|to)\s+[a-z]+\s*$/i, '').trim();
+    return phrase ? { tool: 'translate_text', input: { text: phrase, to } } : { text: 'Translate what?' };
+  }
+  if (/\b(search|look up|google|what is|who is)\b/.test(t)) {
+    const query = text.replace(/^.*?\b(search for|search|look up|google)\b\s*/i, '').trim();
+    return { tool: 'search_web', input: { query: query || text } };
   }
 
   if (/\b(hi|hey|hello|yo|jarvis|you there|you awake)\b/.test(t) && t.length < 30) {
@@ -2649,6 +3027,9 @@ class Orb {
       size: 0.6 + Math.random() * 1.8,
     }));
     this.getLevel = () => 0;
+    // When the local model is running it needs the GPU far more than we do.
+    this.quiet = false;
+    this.frame = 0;
 
     this.#resize();
     window.addEventListener('resize', () => this.#resize());
@@ -2657,6 +3038,11 @@ class Orb {
   setAccent(hex) {
     this.accent = hex;
     this.hsl = hexToHsl(hex);
+  }
+
+  /** Drop to a trickle of frames so a local model can have the GPU. */
+  setQuiet(quiet) {
+    this.quiet = Boolean(quiet);
   }
 
   setState(state) {
@@ -2670,7 +3056,10 @@ class Orb {
 
   start() {
     const loop = () => {
-      this.#frame();
+      this.frame++;
+      // In quiet mode render one frame in six — enough to stay alive, cheap
+      // enough to leave the GPU to the model.
+      if (!this.quiet || this.frame % 6 === 0) this.#frame();
       this.raf = requestAnimationFrame(loop);
     };
     loop();
@@ -2843,6 +3232,8 @@ class Wave {
     this.gain = 0;          // 0..1 overall visibility, eased toward target
     this.target = 0;
     this.getSpectrum = () => this.data;
+    this.quiet = false;
+    this.frame = 0;
     this.#resize();
     window.addEventListener('resize', () => this.#resize());
   }
@@ -2862,6 +3253,11 @@ class Wave {
     ];
   }
 
+  /** Drop to a trickle of frames so a local model can have the GPU. */
+  setQuiet(quiet) {
+    this.quiet = Boolean(quiet);
+  }
+
   bind(fn) {
     this.getSpectrum = fn;
   }
@@ -2873,7 +3269,8 @@ class Wave {
 
   start() {
     const loop = () => {
-      this.#frame();
+      this.frame++;
+      if (!this.quiet || this.frame % 6 === 0) this.#frame();
       this.raf = requestAnimationFrame(loop);
     };
     loop();
@@ -3312,6 +3709,16 @@ class MindView {
  */
 const WEBLLM_CDN = 'https://esm.run/@mlc-ai/web-llm';
 
+/**
+ * Speed tiers offered in settings. Smaller is dramatically faster on modest
+ * hardware; "balanced" is the default.
+ */
+const SPEED_TIERS = [
+  { id: 'fastest', label: 'Fastest — smallest model, ~0.4 GB', models: ['Qwen2.5-0.5B-Instruct-q4f16_1-MLC', 'Qwen2-0.5B-Instruct-q4f16_1-MLC', 'TinyLlama-1.1B-Chat-v1.0-q4f16_1-MLC'] },
+  { id: 'balanced', label: 'Balanced — ~1 GB (default)', models: ['Qwen2.5-1.5B-Instruct-q4f16_1-MLC', 'Llama-3.2-1B-Instruct-q4f32_1-MLC', 'Llama-3.2-1B-Instruct-q4f16_1-MLC'] },
+  { id: 'smartest', label: 'Smartest — ~2 GB, slowest', models: ['Llama-3.2-3B-Instruct-q4f16_1-MLC', 'gemma-2-2b-it-q4f16_1-MLC', 'Phi-3.5-mini-instruct-q4f16_1-MLC'] },
+];
+
 /** Preferred small models, best-first. Resolved against what WebLLM ships. */
 const PREFERRED = [
   'Qwen2.5-1.5B-Instruct-q4f16_1-MLC',
@@ -3330,10 +3737,17 @@ function webGpuSupported() {
  * known-good list but falling back to the smallest instruct model avoids
  * hard-coding an id that may have been renamed.
  */
-function resolveModelId(available, wanted) {
+function resolveModelId(available, wanted, tier) {
   const ids = (available || []).map((m) => (typeof m === 'string' ? m : m.model_id)).filter(Boolean);
   if (!ids.length) return wanted || PREFERRED[0];
   if (wanted && ids.includes(wanted)) return wanted;
+
+  // Honour the chosen speed tier before the generic preference list.
+  const wantedTier = SPEED_TIERS.find((t) => t.id === tier);
+  if (wantedTier) {
+    for (const id of wantedTier.models) if (ids.includes(id)) return id;
+  }
+
   for (const id of PREFERRED) if (ids.includes(id)) return id;
   // Smallest instruct-tuned model we can find, by the parameter count in its name.
   const scored = ids
@@ -3463,7 +3877,7 @@ class LocalBrain {
         throw new Error('Could not download the local AI engine. Check your connection and try again.');
       });
       const available = webllm.prebuiltAppConfig?.model_list || [];
-      this.modelId = resolveModelId(available, this.getSettings().localModel);
+      this.modelId = resolveModelId(available, this.getSettings().localModel, this.getSettings().localSpeed);
 
       this.engine = await webllm.CreateMLCEngine(this.modelId, {
         initProgressCallback: (p) => {
@@ -3482,15 +3896,26 @@ class LocalBrain {
   }
 
   /** Same shape as Brain.stream / OfflineBrain.stream. */
-  async stream({ system, messages, tools }, on = {}) {
+  async stream(request, on = {}) {
+    try {
+      return await this.#generate(request, on);
+    } finally {
+      this.on.busy?.(false);
+    }
+  }
+
+  async #generate({ system, messages, tools }, on = {}) {
     const engine = await this.load();
     const chat = toChatMessages(`${system}${buildToolPrompt(tools)}`, messages);
 
+    // Spoken replies are short, and every extra token costs real time on a
+    // small GPU. Tell the UI to stop animating while we generate.
+    this.on.busy?.(true);
     const reply = await engine.chat.completions.create({
       messages: chat,
       stream: true,
       temperature: 0.6,
-      max_tokens: 512,
+      max_tokens: 200,
     });
 
     // Buffer the opening characters: if it turns out to be a tool call we must
@@ -3572,6 +3997,7 @@ const el = {
   mind: $('mind'), mindCanvas: $('mind-canvas'), mindSearch: $('mind-search'),
   mindClose: $('mind-close'), mindDetail: $('mind-detail'), mindStats: $('mind-stats'),
   brainBtn: $('brain-btn'),
+  conn: $('conn'), connGrid: $('conn-grid'), connBtn: $('conn-btn'), connClose: $('conn-close'),
 };
 
 let busy = false;
@@ -3742,6 +4168,11 @@ const localBrain = new LocalBrain({
       el.statModel.textContent = `local AI ${pct}%`;
       setState('thinking', 'loading model');
       if (pct === 0 && text) toast('Downloading the local AI — one time, then it works offline.');
+    },
+    busy(on) {
+      // The model and the visuals were fighting over the same GPU.
+      orb.setQuiet(on);
+      wave.setQuiet(on);
     },
     ready(modelId) {
       toast(`Local AI ready (${modelId.split('-').slice(0, 2).join(' ')}).`);
@@ -3915,18 +4346,30 @@ function buildSystemPrompt() {
 
   if (s.name) lines.push(`The user's name is ${s.name}.`);
 
+  // A small local model pays for every token of context in latency, so give it
+  // a much tighter brief than Claude gets.
+  const local = brainKind() === 'local';
+  const factLimit = local ? 8 : 40;
+  const taskLimit = local ? 5 : 20;
+
   const facts = memory.facts;
   if (facts.length) {
     lines.push('', 'What you already know about the user:');
-    for (const f of facts.slice(-40)) lines.push(`- ${f.text}`);
+    for (const f of facts.slice(-factLimit)) lines.push(`- ${f.text}`);
   }
 
   const open = memory.tasks.filter((t) => !t.done);
   if (open.length) {
     lines.push('', 'Open tasks on their board:');
-    for (const t of open.slice(-20)) lines.push(`- ${t.text}`);
+    for (const t of open.slice(-taskLimit)) lines.push(`- ${t.text}`);
   }
 
+  if (local) {
+    // Drop the long persona section; keep the rules that matter for behaviour.
+    return lines
+      .filter((l) => !l.startsWith('Personality:') && !l.startsWith('apologise'))
+      .join('\n');
+  }
   return lines.join('\n');
 }
 
@@ -4093,6 +4536,17 @@ function syncSettingsControls() {
   $('set-speak').checked = s.speak;
   $('set-always').checked = s.alwaysListen;
   $('set-clap').checked = s.clapToDictate;
+  const speed = $('set-speed');
+  if (!speed.options.length) {
+    for (const tier of SPEED_TIERS) {
+      const opt = document.createElement('option');
+      opt.value = tier.id;
+      opt.textContent = tier.label;
+      speed.append(opt);
+    }
+  }
+  speed.value = s.localSpeed;
+  $('field-speed').style.display = brainKind() === 'local' ? '' : 'none';
   $('set-brain').value = s.brain;
   $('brain-note').textContent = webGpuSupported() ? '' : '(local AI needs WebGPU — not available here)';
   const claudeRows = brainKind() === 'claude';
@@ -4127,6 +4581,16 @@ function wireSettings() {
   bind('set-always', 'alwaysListen', (e) => e.checked);
   bind('set-clap', 'clapToDictate', (e) => e.checked);
   bind('set-accent', 'accent');
+
+  // Changing size means a different model, so drop the loaded one.
+  $('set-speed').addEventListener('change', (ev) => {
+    memory.setSetting('localSpeed', ev.target.value);
+    memory.setSetting('localModel', '');
+    localBrain.engine = null;
+    localBrain.modelId = null;
+    applyModelReadout();
+    toast('Size changed — the new model downloads on your next message.');
+  });
 
   $('set-brain').addEventListener('change', async (ev) => {
     memory.setSetting('brain', ev.target.value);
@@ -4223,6 +4687,64 @@ function applySettings() {
   // Clap detection only makes sense once the mic analyser is live (post-boot).
   if (s.clapToDictate) voice.startClapWatch();
   else voice.stopClapWatch();
+}
+
+// --- connectors -------------------------------------------------------------
+
+/** Is this connector switched on? Unset means on. */
+function connectorOn(id) {
+  return (memory.settings.connectors || {})[id] !== false;
+}
+
+function renderConnectors() {
+  el.connGrid.innerHTML = '';
+  for (const [id, connector] of Object.entries(CONNECTORS)) {
+    const on = connectorOn(id);
+
+    const card = document.createElement('div');
+    card.className = `conn__card ${on ? 'is-on' : 'is-off'}`;
+
+    const head = document.createElement('div');
+    head.className = 'conn__head';
+    const name = document.createElement('span');
+    name.className = 'conn__name';
+    name.textContent = connector.name;
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'conn__toggle';
+    toggle.setAttribute('role', 'switch');
+    toggle.setAttribute('aria-checked', String(on));
+    toggle.setAttribute('aria-label', `${connector.name} connector`);
+    toggle.addEventListener('click', () => {
+      const next = { ...(memory.settings.connectors || {}) };
+      next[id] = !connectorOn(id);
+      memory.setSetting('connectors', next);
+      renderConnectors();
+    });
+
+    head.append(name, toggle);
+
+    const blurb = document.createElement('p');
+    blurb.className = 'conn__blurb';
+    blurb.textContent = connector.blurb;
+
+    const eg = document.createElement('p');
+    eg.className = 'conn__eg';
+    eg.textContent = connector.example;
+
+    card.append(head, blurb, eg);
+    el.connGrid.append(card);
+  }
+}
+
+function openConnectors() {
+  renderConnectors();
+  el.conn.hidden = false;
+}
+
+function closeConnectors() {
+  el.conn.hidden = true;
 }
 
 // --- install as an app ------------------------------------------------------
@@ -4367,6 +4889,8 @@ async function init() {
 
   // Memory brain: open from the panel, close with the button or Escape.
   el.brainBtn.addEventListener('click', openMind);
+  el.connBtn.addEventListener('click', openConnectors);
+  el.connClose.addEventListener('click', closeConnectors);
   el.mindClose.addEventListener('click', closeMind);
   el.mindSearch.addEventListener('input', (ev) => {
     mind.setFilter(ev.target.value);
@@ -4388,6 +4912,10 @@ async function init() {
 
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') {
+      if (!el.conn.hidden) {
+        closeConnectors();
+        return;
+      }
       if (!el.mind.hidden) {
         closeMind();
         return;

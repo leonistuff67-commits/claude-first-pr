@@ -11,7 +11,8 @@ import { Voice } from './voice.js';
 import { Orb } from './orb.js';
 import { Wave } from './wave.js';
 import { MindView } from './mind.js';
-import { LocalBrain, webGpuSupported } from './localbrain.js';
+import { LocalBrain, webGpuSupported, SPEED_TIERS } from './localbrain.js';
+import { CONNECTORS } from './connectors.js';
 import { createTools, fmtDuration } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
@@ -33,6 +34,7 @@ const el = {
   mind: $('mind'), mindCanvas: $('mind-canvas'), mindSearch: $('mind-search'),
   mindClose: $('mind-close'), mindDetail: $('mind-detail'), mindStats: $('mind-stats'),
   brainBtn: $('brain-btn'),
+  conn: $('conn'), connGrid: $('conn-grid'), connBtn: $('conn-btn'), connClose: $('conn-close'),
 };
 
 let busy = false;
@@ -203,6 +205,11 @@ const localBrain = new LocalBrain({
       el.statModel.textContent = `local AI ${pct}%`;
       setState('thinking', 'loading model');
       if (pct === 0 && text) toast('Downloading the local AI — one time, then it works offline.');
+    },
+    busy(on) {
+      // The model and the visuals were fighting over the same GPU.
+      orb.setQuiet(on);
+      wave.setQuiet(on);
     },
     ready(modelId) {
       toast(`Local AI ready (${modelId.split('-').slice(0, 2).join(' ')}).`);
@@ -376,18 +383,30 @@ function buildSystemPrompt() {
 
   if (s.name) lines.push(`The user's name is ${s.name}.`);
 
+  // A small local model pays for every token of context in latency, so give it
+  // a much tighter brief than Claude gets.
+  const local = brainKind() === 'local';
+  const factLimit = local ? 8 : 40;
+  const taskLimit = local ? 5 : 20;
+
   const facts = memory.facts;
   if (facts.length) {
     lines.push('', 'What you already know about the user:');
-    for (const f of facts.slice(-40)) lines.push(`- ${f.text}`);
+    for (const f of facts.slice(-factLimit)) lines.push(`- ${f.text}`);
   }
 
   const open = memory.tasks.filter((t) => !t.done);
   if (open.length) {
     lines.push('', 'Open tasks on their board:');
-    for (const t of open.slice(-20)) lines.push(`- ${t.text}`);
+    for (const t of open.slice(-taskLimit)) lines.push(`- ${t.text}`);
   }
 
+  if (local) {
+    // Drop the long persona section; keep the rules that matter for behaviour.
+    return lines
+      .filter((l) => !l.startsWith('Personality:') && !l.startsWith('apologise'))
+      .join('\n');
+  }
   return lines.join('\n');
 }
 
@@ -554,6 +573,17 @@ function syncSettingsControls() {
   $('set-speak').checked = s.speak;
   $('set-always').checked = s.alwaysListen;
   $('set-clap').checked = s.clapToDictate;
+  const speed = $('set-speed');
+  if (!speed.options.length) {
+    for (const tier of SPEED_TIERS) {
+      const opt = document.createElement('option');
+      opt.value = tier.id;
+      opt.textContent = tier.label;
+      speed.append(opt);
+    }
+  }
+  speed.value = s.localSpeed;
+  $('field-speed').style.display = brainKind() === 'local' ? '' : 'none';
   $('set-brain').value = s.brain;
   $('brain-note').textContent = webGpuSupported() ? '' : '(local AI needs WebGPU — not available here)';
   const claudeRows = brainKind() === 'claude';
@@ -588,6 +618,16 @@ function wireSettings() {
   bind('set-always', 'alwaysListen', (e) => e.checked);
   bind('set-clap', 'clapToDictate', (e) => e.checked);
   bind('set-accent', 'accent');
+
+  // Changing size means a different model, so drop the loaded one.
+  $('set-speed').addEventListener('change', (ev) => {
+    memory.setSetting('localSpeed', ev.target.value);
+    memory.setSetting('localModel', '');
+    localBrain.engine = null;
+    localBrain.modelId = null;
+    applyModelReadout();
+    toast('Size changed — the new model downloads on your next message.');
+  });
 
   $('set-brain').addEventListener('change', async (ev) => {
     memory.setSetting('brain', ev.target.value);
@@ -684,6 +724,64 @@ function applySettings() {
   // Clap detection only makes sense once the mic analyser is live (post-boot).
   if (s.clapToDictate) voice.startClapWatch();
   else voice.stopClapWatch();
+}
+
+// --- connectors -------------------------------------------------------------
+
+/** Is this connector switched on? Unset means on. */
+function connectorOn(id) {
+  return (memory.settings.connectors || {})[id] !== false;
+}
+
+function renderConnectors() {
+  el.connGrid.innerHTML = '';
+  for (const [id, connector] of Object.entries(CONNECTORS)) {
+    const on = connectorOn(id);
+
+    const card = document.createElement('div');
+    card.className = `conn__card ${on ? 'is-on' : 'is-off'}`;
+
+    const head = document.createElement('div');
+    head.className = 'conn__head';
+    const name = document.createElement('span');
+    name.className = 'conn__name';
+    name.textContent = connector.name;
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'conn__toggle';
+    toggle.setAttribute('role', 'switch');
+    toggle.setAttribute('aria-checked', String(on));
+    toggle.setAttribute('aria-label', `${connector.name} connector`);
+    toggle.addEventListener('click', () => {
+      const next = { ...(memory.settings.connectors || {}) };
+      next[id] = !connectorOn(id);
+      memory.setSetting('connectors', next);
+      renderConnectors();
+    });
+
+    head.append(name, toggle);
+
+    const blurb = document.createElement('p');
+    blurb.className = 'conn__blurb';
+    blurb.textContent = connector.blurb;
+
+    const eg = document.createElement('p');
+    eg.className = 'conn__eg';
+    eg.textContent = connector.example;
+
+    card.append(head, blurb, eg);
+    el.connGrid.append(card);
+  }
+}
+
+function openConnectors() {
+  renderConnectors();
+  el.conn.hidden = false;
+}
+
+function closeConnectors() {
+  el.conn.hidden = true;
 }
 
 // --- install as an app ------------------------------------------------------
@@ -857,6 +955,8 @@ async function init() {
 
   // Memory brain: open from the panel, close with the button or Escape.
   el.brainBtn.addEventListener('click', openMind);
+  el.connBtn.addEventListener('click', openConnectors);
+  el.connClose.addEventListener('click', closeConnectors);
   el.mindClose.addEventListener('click', closeMind);
   el.mindSearch.addEventListener('input', (ev) => {
     mind.setFilter(ev.target.value);
@@ -878,6 +978,10 @@ async function init() {
 
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') {
+      if (!el.conn.hidden) {
+        closeConnectors();
+        return;
+      }
       if (!el.mind.hidden) {
         closeMind();
         return;

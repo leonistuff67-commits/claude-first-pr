@@ -59,6 +59,9 @@ export class Orb {
       size: 0.6 + Math.random() * 1.8,
     }));
     this.getLevel = () => 0;
+    // When the local model is running it needs the GPU far more than we do.
+    this.quiet = false;
+    this.frame = 0;
 
     this.#resize();
     window.addEventListener('resize', () => this.#resize());
@@ -67,6 +70,11 @@ export class Orb {
   setAccent(hex) {
     this.accent = hex;
     this.hsl = hexToHsl(hex);
+  }
+
+  /** Drop to a trickle of frames so a local model can have the GPU. */
+  setQuiet(quiet) {
+    this.quiet = Boolean(quiet);
   }
 
   setState(state) {
@@ -80,7 +88,10 @@ export class Orb {
 
   start() {
     const loop = () => {
-      this.#frame();
+      this.frame++;
+      // In quiet mode render one frame in six — enough to stay alive, cheap
+      // enough to leave the GPU to the model.
+      if (!this.quiet || this.frame % 6 === 0) this.#frame();
       this.raf = requestAnimationFrame(loop);
     };
     loop();

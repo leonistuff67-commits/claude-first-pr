@@ -50,6 +50,10 @@ can actually run.
   `localStorage`, so they stay on your machine.
 - **Runs tools.** Timers, a task board, memory search, recolouring itself, opening
   links, reading local device status, and the clock.
+- **Connectors.** JARVIS writes the email, the calendar event, the message or the
+  search and opens the real app with everything filled in — you press send. Gmail,
+  Google Calendar, Maps, Web search, YouTube, WhatsApp and Translate, each toggleable
+  on the Connectors page. Available to all three brains.
 - **The orb reacts.** It's driven by the real microphone level through a WebAudio
   analyser while you speak, and by speech boundaries while it answers. Its colour and
   motion follow the state machine: standby, listening, thinking, speaking, serious.
@@ -141,6 +145,29 @@ The first load downloads roughly a gigabyte of weights, cached by the browser
 afterwards. It is *much* weaker than Claude — fine for chat, timers and notes, not for
 hard reasoning.
 
+**If it feels slow**, three things help, in order of impact:
+
+1. **Settings → Local AI size → Fastest.** A 0.5 GB model is several times quicker than
+   the 1 GB default on modest hardware.
+2. The orb and spectrum now drop to a sixth of their frame rate while the model is
+   generating — they were competing with it for the same GPU.
+3. The prompt is trimmed for the local brain (8 memories instead of 40, no persona
+   preamble) and replies are capped at 200 tokens, since every token is real latency.
+
+## Connectors
+
+A web page cannot read your mailbox without a full Google OAuth setup — a Cloud
+project, a client ID and a consent screen. Rather than pretend, connectors **hand off**:
+JARVIS composes the thing and opens the real app with the fields pre-filled, and you
+press send. Nothing is sent on your behalf and no account is ever connected.
+
+Each connector contributes tool definitions, so all three brains can use them — the
+rules brain routes common phrasings directly, and the local and Claude brains call them
+as normal tools. Every URL builder is a pure function with tests covering escaping
+(an `&` in a subject must not become a new query parameter) and malformed input.
+
+![The connectors page: a card per hand-off with a toggle and an example phrase](docs/connectors.png)
+
 ## Speech engines
 
 Dictation goes through `recognizer.js`, which offers two interchangeable engines:
@@ -174,6 +201,7 @@ which every browser supports.
 | `public/js/clap.js` | The double-clap detector — a pure state machine, so it's unit-testable. |
 | `public/js/wave.js` | The live voice spectrum bars. |
 | `public/js/mind.js` | The memory brain: graph wiring (pure, tested) plus the neural renderer. |
+| `public/js/connectors.js` | Deep-link hand-offs to Gmail, Calendar, Maps and friends. Pure URL builders. |
 | `public/js/tools.js` | Tool schemas and their browser-side handlers. |
 | `public/js/memory.js` | `localStorage` state: settings, facts, tasks, conversation. |
 | `public/js/orb.js` | The canvas visualizer. |
@@ -208,6 +236,8 @@ npm run test:bundle   # built jarvis.html over file://: model/effort pickers + s
 npm run test:offline  # built jarvis.html with NO key: tools run locally, network untouched
 npm run test:clap     # feeds a real two-clap WAV through the mic and checks detection
 npm run test:mind     # the memory brain: neurons, synapses, hover readout, search, hotkeys
+npm run test:conn     # the connectors page: listing, toggles persisting, URL shape
+npm run test:update   # regression: an installed app must pick up a new build
 npm run test:pwa      # manifest + service worker, then boots with the server killed
 npm run test:all      # everything above in sequence
 ```

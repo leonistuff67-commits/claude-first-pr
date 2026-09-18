@@ -4,6 +4,7 @@
  * string (or a promise for one) which is sent back as the tool_result.
  */
 import { memory } from './memory.js';
+import { connectorTools, findConnectorTool } from './connectors.js';
 
 const timers = new Map();
 
@@ -275,11 +276,33 @@ export function createTools(ctx) {
     },
   };
 
+  /** Built-in tools plus whichever connectors are switched on. */
+  function allDefinitions() {
+    return [...defs, ...connectorTools(memory.settings.connectors || {})];
+  }
+
   return {
-    definitions: defs,
+    get definitions() {
+      return allDefinitions();
+    },
 
     /** Run a tool_use block and return its string result. */
     async run(name, input) {
+      // Connector tools build a URL and hand off to the real app.
+      const hit = findConnectorTool(name, memory.settings.connectors || {});
+      if (hit) {
+        try {
+          const url = hit.tool.build(input || {});
+          const parsed = new URL(url);
+          if (parsed.protocol !== 'https:') return 'Refused: connectors only open https links.';
+          window.open(parsed.href, '_blank', 'noopener');
+          ctx.notify?.(`Opened ${hit.connector.name}`);
+          return hit.tool.say?.(input || {}) || `Opened ${hit.connector.name}.`;
+        } catch (err) {
+          return `Could not open ${hit.connector.name}: ${err.message}`;
+        }
+      }
+
       const fn = handlers[name];
       if (!fn) return `Unknown tool "${name}".`;
       try {

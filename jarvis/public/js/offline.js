@@ -131,6 +131,34 @@ function interpret(raw) {
     return { tool: 'system_status', input: {} };
   }
 
+  // --- connectors: hand off to a real app with everything filled in ---
+
+  if (/\b(email|e-mail|mail)\b/.test(t) && !/\bemail address\b/.test(t)) {
+    const to = (text.match(/[\w.+-]+@[\w-]+\.[\w.]+/) || [''])[0];
+    const about = text.replace(/^.*?\b(about|saying|re)\b\s*/i, '');
+    const body = about && about !== text ? about : text;
+    return { tool: 'compose_email', input: { to, subject: body.slice(0, 60), body } };
+  }
+  if (/\bdirections?\b|\bhow do i get to\b|\bnavigate to\b/.test(t)) {
+    const destination = text.replace(/^.*?\b(directions? to|how do i get to|navigate to)\b\s*/i, '').trim();
+    return destination
+      ? { tool: 'get_directions', input: { destination } }
+      : { text: 'Where do you want to go?' };
+  }
+  if (/\b(play|put on)\b/.test(t) && !/\btimer\b/.test(t)) {
+    const query = text.replace(/^.*?\b(play|put on)\b\s*/i, '').trim();
+    return query ? { tool: 'play_video', input: { query } } : { text: 'Play what?' };
+  }
+  if (/\btranslate\b/.test(t)) {
+    const to = (t.match(/\b(?:in|into|to)\s+([a-z]+)\s*$/) || [])[1] || 'es';
+    const phrase = text.replace(/^.*?\btranslate\b\s*/i, '').replace(/\b(?:in|into|to)\s+[a-z]+\s*$/i, '').trim();
+    return phrase ? { tool: 'translate_text', input: { text: phrase, to } } : { text: 'Translate what?' };
+  }
+  if (/\b(search|look up|google|what is|who is)\b/.test(t)) {
+    const query = text.replace(/^.*?\b(search for|search|look up|google)\b\s*/i, '').trim();
+    return { tool: 'search_web', input: { query: query || text } };
+  }
+
   if (/\b(hi|hey|hello|yo|jarvis|you there|you awake)\b/.test(t) && t.length < 30) {
     return { text: pick(GREETINGS) };
   }
