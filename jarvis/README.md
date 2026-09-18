@@ -8,9 +8,14 @@ can actually run.
 
 ## What it does
 
-- **Installs as a real app.** It's a PWA: install it from Chrome/Edge and it gets its
-  own dock/taskbar icon and window, no browser chrome, working fully offline — while
-  keeping the wake word and dictation that native wrappers can't.
+- **The memory brain.** Everything JARVIS remembers is a neuron in a living graph:
+  memories that share meaning are wired together with bright synapses, signals pulse
+  along them, and memories stored around the same time are threaded by faint temporal
+  links. Hover any neuron to read the memory it holds; search to light up a subset.
+  Open it from the Memory panel or just press **B**.
+- **Installs as a real app in one click.** Visit the hosted site, press Install, done —
+  no terminal, no npm. It gets its own dock/taskbar icon and window, works fully
+  offline, and keeps the wake word and dictation that native wrappers can't.
 - **Works with no API key.** Out of the box, with no key at all, JARVIS runs on a
   local pattern-matching brain — timers, tasks, memory, the clock, recolouring and
   serious mode all work offline and never touch the network. Paste an Anthropic key in
@@ -44,33 +49,33 @@ can actually run.
   analyser while you speak, and by speech boundaries while it answers. Its colour and
   motion follow the state machine: standby, listening, thinking, speaking, serious.
 
+![The memory brain: each stored memory is a glowing neuron wired to related memories, with the hovered one read out below](docs/brain.png)
+
 ![Serious mode: the orb and frame turn red, running offline with a local timer and stored facts](docs/serious.png)
 
 ## Running it
 
-There are two ways to run it, depending on whether you want a proper installed
-app or just a file to open.
+Three ways, easiest first: install it from the hosted site, open the single
+file, or run the local server.
 
-### As an installed app (recommended)
+### As an installed app (easiest — no terminal)
 
-JARVIS is a PWA — it installs to your dock/taskbar and opens in its own window,
-no browser chrome, and runs fully offline once installed.
+JARVIS is published to GitHub Pages by the workflow in
+`.github/workflows/pages.yml`. Once Pages is enabled on the repo (Settings →
+Pages → Source: **GitHub Actions**, a one-time click), the app lives at:
 
-```bash
-cd jarvis
-npm start
-# -> http://localhost:8787
-```
+**<https://leonistuff67-commits.github.io/claude-first-pr/>**
 
-Open that in Chrome or Edge and click **Install as an app** on the boot screen
-(or the install icon in the address bar). It gets its own icon and window and
-behaves like any other desktop app — but keeps the wake word and dictation
-working, which native wrappers like Electron can't, because those rely on
-Chrome's speech engine.
+Open that in Chrome or Edge and press **Install as an app**. That's the whole
+install: no npm, no server, no terminal. It gets its own dock/taskbar icon and
+window, and because the service worker caches the whole shell it opens with no
+network afterwards.
 
-Everything is cached on first load, so after installing it opens even with no
-network. Add an API key in settings for the full model, or leave it out and run
-on the offline brain.
+A PWA is the right wrapper here rather than Electron: only a real Chrome/Edge
+context gives you the wake word and dictation.
+
+Add an API key in settings for the full model, or leave it out and run on the
+offline brain.
 
 ### The one file
 
@@ -144,6 +149,7 @@ which every browser supports.
 | `public/js/recognizer.js` | Pluggable transcription: the browser engine and the on-device WASM engine. |
 | `public/js/clap.js` | The double-clap detector — a pure state machine, so it's unit-testable. |
 | `public/js/wave.js` | The live voice spectrum bars. |
+| `public/js/mind.js` | The memory brain: graph wiring (pure, tested) plus the neural renderer. |
 | `public/js/tools.js` | Tool schemas and their browser-side handlers. |
 | `public/js/memory.js` | `localStorage` state: settings, facts, tasks, conversation. |
 | `public/js/orb.js` | The canvas visualizer. |
@@ -177,6 +183,7 @@ npm run test:e2e      # served app: full turn loop in a real browser vs a mock A
 npm run test:bundle   # built jarvis.html over file://: model/effort pickers + serious mode
 npm run test:offline  # built jarvis.html with NO key: tools run locally, network untouched
 npm run test:clap     # feeds a real two-clap WAV through the mic and checks detection
+npm run test:mind     # the memory brain: neurons, synapses, hover readout, search, hotkeys
 npm run test:pwa      # manifest + service worker, then boots with the server killed
 npm run test:all      # everything above in sequence
 ```
@@ -193,5 +200,8 @@ they cover every transport and the two things that are easy to get wrong:
   brain — a timer and a memory command land, and nothing hits the network.
 - `test:clap` synthesizes a WAV with two real claps, plays it through Chromium's fake
   microphone, and asserts the app reacts — the actual audio path, not just the math.
+- `test:mind` opens the memory brain over six stored memories and checks a neuron per
+  memory, that synapses were wired, that hovering reads the memory out with its date,
+  and that search, Escape and the **B** shortcut behave.
 - `test:pwa` checks the manifest and that the service worker activates and precaches the
   shell, then **kills the server** and confirms the app still boots — real offline install.

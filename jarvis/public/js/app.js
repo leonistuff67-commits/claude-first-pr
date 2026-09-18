@@ -10,10 +10,14 @@ import { OfflineBrain } from './offline.js';
 import { Voice } from './voice.js';
 import { Orb } from './orb.js';
 import { Wave } from './wave.js';
+import { MindView } from './mind.js';
 import { createTools, fmtDuration } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
 const MAX_TOOL_ROUNDS = 6;
+
+/** Where JARVIS is hosted, so it can be installed without running anything. */
+const HOSTED_URL = 'https://leonistuff67-commits.github.io/claude-first-pr/';
 
 const el = {
   hud: $('hud'), boot: $('boot'), bootBtn: $('boot-btn'), bootNote: $('boot-note'),
@@ -25,6 +29,9 @@ const el = {
   timers: $('timers'), tasks: $('tasks'), facts: $('facts'),
   taskCount: $('task-count'), factCount: $('fact-count'),
   toast: $('toast'), wipeBtn: $('wipe-btn'),
+  mind: $('mind'), mindCanvas: $('mind-canvas'), mindSearch: $('mind-search'),
+  mindClose: $('mind-close'), mindDetail: $('mind-detail'), mindStats: $('mind-stats'),
+  brainBtn: $('brain-btn'),
 };
 
 let busy = false;
@@ -36,8 +43,64 @@ let serious = false;
 const orb = new Orb(el.orb);
 const wave = new Wave(el.wave);
 
+// --- memory brain -----------------------------------------------------------
+
+const mind = new MindView(el.mindCanvas, {
+  onHover(node) {
+    if (!node) {
+      el.mindDetail.classList.remove('is-live');
+      el.mindDetail.innerHTML = '<p class="mind__hint">Hover a neuron to read the memory it holds.</p>';
+      return;
+    }
+    el.mindDetail.classList.add('is-live');
+    const when = new Date(node.at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+    el.mindDetail.innerHTML = '';
+    const text = document.createElement('p');
+    text.textContent = node.text;
+    const meta = document.createElement('p');
+    meta.className = 'mind__meta';
+    meta.textContent = `stored ${when} · ${node.degree} connection${node.degree === 1 ? '' : 's'}`;
+    el.mindDetail.append(text, meta);
+  },
+});
+
+function openMind() {
+  el.mind.hidden = false;
+  mind.setAccent(serious ? '#ff5f6d' : memory.settings.accent);
+  mind.setFilter(el.mindSearch.value);
+  mind.setFacts(memory.facts);
+  renderMindStats();
+  mind.start();
+  el.mindSearch.focus();
+}
+
+function closeMind() {
+  mind.stop();
+  el.mind.hidden = true;
+}
+
+function renderMindStats() {
+  const nodes = mind.nodes.length;
+  const links = mind.edges.length;
+  const busiest = mind.nodes.reduce((a, b) => (b.degree > (a?.degree ?? -1) ? b : a), null);
+  el.mindStats.innerHTML = '';
+  const stat = (value, label) => {
+    const div = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = value;
+    div.append(b, document.createTextNode(label));
+    return div;
+  };
+  el.mindStats.append(stat(String(nodes), 'memories'), stat(String(links), 'connections'));
+  if (busiest && busiest.degree > 0) {
+    el.mindStats.append(stat(String(busiest.degree), 'strongest link'));
+  }
+}
+
 function setState(state, label = state) {
   orb.setState(state);
+  // Expose the state to CSS so the shell can react (composer glow, etc).
+  document.body.dataset.state = state;
   // The spectrum bars light up while listening or speaking, idle otherwise.
   wave.setActive(state === 'listening' || state === 'speaking');
   el.orbLabel.textContent = serious && label === 'standby' ? 'serious' : label;
@@ -50,6 +113,7 @@ function setAccent(hex) {
   document.documentElement.style.setProperty('--accent', hex);
   orb.setAccent(hex);
   wave.setAccent(hex);
+  mind.setAccent(hex);
 }
 
 let toastTimer;
@@ -95,6 +159,12 @@ function renderLists() {
       li.textContent = f.text;
       el.facts.append(li);
     }
+  }
+
+  // Keep the brain in sync if it's open — a new memory grows a new neuron.
+  if (el.mind && !el.mind.hidden) {
+    mind.setFacts(memory.facts);
+    renderMindStats();
   }
 }
 
@@ -596,7 +666,8 @@ function setupInstall() {
     }
     // No native prompt available — say why and what to do instead.
     if (location.protocol === 'file:') {
-      toast('To install, run the JARVIS server and open http://localhost — then install from there.');
+      toast(`Open ${HOSTED_URL} in Chrome or Edge, then press Install there.`);
+      window.open(HOSTED_URL, '_blank', 'noopener');
     } else if (/safari/i.test(navigator.userAgent) && !/chrome|chromium|edg/i.test(navigator.userAgent)) {
       toast('In Safari: Share → Add to Dock (or Add to Home Screen) to install.');
     } else {
@@ -694,6 +765,13 @@ async function init() {
 
   setupInstall();
 
+  // Memory brain: open from the panel, close with the button or Escape.
+  el.brainBtn.addEventListener('click', openMind);
+  el.mindClose.addEventListener('click', closeMind);
+  el.mindSearch.addEventListener('input', (ev) => {
+    mind.setFilter(ev.target.value);
+  });
+
   el.bootBtn.addEventListener('click', boot, { once: true });
 
   el.composer.addEventListener('submit', (ev) => {
@@ -710,8 +788,17 @@ async function init() {
 
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') {
+      if (!el.mind.hidden) {
+        closeMind();
+        return;
+      }
       voice.cancelSpeech();
       engine().abort();
+      return;
+    }
+    // "B" opens the brain, unless you're typing.
+    if ((ev.key === 'b' || ev.key === 'B') && !['INPUT', 'TEXTAREA'].includes(ev.target.tagName)) {
+      if (el.mind.hidden) openMind();
       return;
     }
     // Space anywhere outside a text field starts a capture.

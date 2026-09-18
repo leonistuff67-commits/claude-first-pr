@@ -18,6 +18,7 @@ const SHELL = [
   './js/voice.js',
   './js/orb.js',
   './js/wave.js',
+  './js/mind.js',
   './js/tools.js',
   './js/memory.js',
   './manifest.webmanifest',

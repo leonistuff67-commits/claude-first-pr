@@ -14,7 +14,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
 
 /** Dependency order: each module may use everything above it. */
-const MODULES = ['memory.js', 'tools.js', 'brain.js', 'offline.js', 'clap.js', 'recognizer.js', 'voice.js', 'orb.js', 'wave.js', 'app.js'];
+const MODULES = ['memory.js', 'tools.js', 'brain.js', 'offline.js', 'clap.js', 'recognizer.js', 'voice.js', 'orb.js', 'wave.js', 'mind.js', 'app.js'];
 
 function stripModuleSyntax(source, name) {
   // Drop anything the standalone file can't use (e.g. service-worker

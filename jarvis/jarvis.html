@@ -520,6 +520,216 @@ body.is-serious .clock__time { color: #fff; }
   border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
+/* --- memory brain -------------------------------------------------------- */
+
+.block__action {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: transparent;
+  color: var(--accent);
+  font: 500 9px/1 var(--font);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 160ms, color 160ms;
+}
+.block__action:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: #fff;
+}
+.block__title .badge { margin-left: 8px; }
+
+.mind {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  background:
+    radial-gradient(70% 60% at 50% 45%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
+    rgba(3, 6, 11, 0.94);
+  backdrop-filter: blur(6px);
+  animation: mind-in 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.mind[hidden] { display: none; }
+@keyframes mind-in {
+  from { opacity: 0; transform: scale(1.04); }
+}
+
+.mind__canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.mind__bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 22px 26px;
+}
+.mind__eyebrow {
+  display: block;
+  font: 500 9px/1 var(--font);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 7px;
+}
+.mind__title h2 {
+  margin: 0;
+  font: 200 26px/1 var(--font);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 0 30px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+
+.mind__search {
+  margin-left: auto;
+  width: min(280px, 34vw);
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: 400 13px/1 var(--ui);
+  outline: none;
+}
+.mind__search:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.mind__search::placeholder { color: var(--muted); }
+
+.mind__close {
+  width: 44px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font: 500 10px/1 var(--font);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.mind__close:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+
+.mind__stats {
+  position: absolute;
+  left: 26px;
+  bottom: 26px;
+  display: flex;
+  gap: 22px;
+  font: 400 11px/1.5 var(--font);
+  color: var(--muted);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.mind__stats b {
+  display: block;
+  font-size: 22px;
+  font-weight: 300;
+  color: #fff;
+  letter-spacing: 0;
+  text-shadow: 0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.mind__detail {
+  position: absolute;
+  left: 50%;
+  bottom: 92px; /* clear of the toast, which shares the bottom-centre */
+  transform: translateX(-50%);
+  max-width: min(620px, 80vw);
+  padding: 14px 20px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(8, 14, 23, 0.82);
+  text-align: center;
+  pointer-events: none;
+  transition: border-color 200ms;
+}
+.mind__detail.is-live { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.mind__detail p { margin: 0; font-size: 14.5px; line-height: 1.55; color: var(--text); }
+.mind__hint { color: var(--muted) !important; font-style: italic; }
+.mind__meta {
+  margin-top: 7px !important;
+  font: 400 10.5px/1 var(--font) !important;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted) !important;
+}
+
+@media (max-width: 720px) {
+  .mind__bar { flex-wrap: wrap; gap: 10px; padding: 16px; }
+  .mind__search { width: 100%; margin-left: 0; order: 3; }
+  .mind__stats { left: 16px; bottom: 16px; gap: 14px; }
+}
+
+/* --- depth pass ---------------------------------------------------------- */
+
+/* A vignette so the centre reads brighter than the edges. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: radial-gradient(120% 100% at 50% 40%, transparent 45%, rgba(0, 0, 0, 0.55) 100%);
+}
+
+/* Panels get a lit top edge and a deeper base, so they sit in space. */
+.block {
+  position: relative;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0) 38%),
+    var(--panel);
+  box-shadow:
+    0 18px 40px -26px rgba(0, 0, 0, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.block::before {
+  content: "";
+  position: absolute;
+  inset-inline: 16%;
+  top: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 60%, transparent), transparent);
+  opacity: 0.55;
+}
+
+/* The composer breathes with whatever JARVIS is doing. */
+.composer {
+  transition: border-color 300ms ease, box-shadow 300ms ease;
+}
+body[data-state="listening"] .composer {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
+              0 0 34px -6px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+body[data-state="thinking"] .composer {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* Concentric rings breathing behind the boot title. */
+.boot__inner { position: relative; }
+.boot__inner::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 74px;
+  width: 340px;
+  height: 340px;
+  margin: -170px 0 0 -170px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow:
+    0 0 0 40px color-mix(in srgb, var(--accent) 5%, transparent),
+    0 0 90px -10px color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: boot-ring 5s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes boot-ring {
+  0%, 100% { transform: scale(0.94); opacity: 0.5; }
+  50%      { transform: scale(1.06); opacity: 0.9; }
+}
+
 </style>
 </head>
 <body>
@@ -594,11 +804,35 @@ body.is-serious .clock__time { color: #fff; }
     </section>
 
     <section class="block block--grow">
-      <h2 class="block__title">Memory <span class="badge" id="fact-count">0</span></h2>
+      <h2 class="block__title">
+        Memory
+        <button type="button" class="block__action" id="brain-btn" title="Open the memory brain">brain</button>
+        <span class="badge" id="fact-count">0</span>
+      </h2>
       <ul class="list" id="facts"><li class="list__empty">nothing stored yet</li></ul>
     </section>
   </aside>
 </main>
+
+<!-- memory brain ---------------------------------------------------------- -->
+<div class="mind" id="mind" hidden>
+  <canvas id="mind-canvas" class="mind__canvas"></canvas>
+
+  <header class="mind__bar">
+    <div class="mind__title">
+      <span class="mind__eyebrow">memory</span>
+      <h2>The Brain</h2>
+    </div>
+    <input type="search" id="mind-search" class="mind__search" placeholder="Search memories…" />
+    <button type="button" class="mind__close" id="mind-close" aria-label="Close">esc</button>
+  </header>
+
+  <div class="mind__stats" id="mind-stats"></div>
+
+  <div class="mind__detail" id="mind-detail">
+    <p class="mind__hint">Hover a neuron to read the memory it holds.</p>
+  </div>
+</div>
 
 <!-- boot overlay --------------------------------------------------------- -->
 <div class="boot" id="boot">
@@ -2692,6 +2926,365 @@ class Wave {
 }
 // --- end wave.js ---
 
+// --- mind.js ---
+/**
+ * The memory brain.
+ *
+ * Every stored fact becomes a neuron. Facts that share meaningful words are
+ * wired together with synapses, and signals pulse along those synapses, so the
+ * whole thing reads as a living brain rather than a list. Hover a neuron to
+ * read the memory it holds.
+ *
+ * `buildGraph` is pure so the wiring logic can be unit-tested; `MindView`
+ * handles physics, rendering and pointer interaction.
+ */
+
+/** Words too common to imply a connection between two memories. */
+const STOPWORDS = new Set([
+  'the', 'and', 'that', 'this', 'with', 'from', 'they', 'them', 'their', 'have',
+  'has', 'had', 'was', 'were', 'been', 'being', 'for', 'not', 'but', 'you',
+  'your', 'yours', 'she', 'her', 'his', 'him', 'its', 'our', 'ours', 'are',
+  'who', 'what', 'when', 'where', 'which', 'how', 'why', 'all', 'any', 'can',
+  'will', 'would', 'should', 'could', 'into', 'over', 'than', 'then', 'there',
+  'here', 'more', 'most', 'some', 'such', 'only', 'very', 'just', 'like',
+  'likes', 'prefer', 'prefers', 'user', 'about', 'also', 'does', 'did', 'get',
+  'gets', 'got', 'one', 'two', 'out', 'off', 'own', 'per', 'via',
+]);
+
+/**
+ * Crude stemmer so "meeting"/"meetings" and "coffee"/"coffees" link up.
+ * Plural first, then verb ending — "meetings" -> "meeting" -> "meet".
+ */
+function stem(word) {
+  let s = word;
+  if (s.endsWith('ies') && s.length > 4) s = `${s.slice(0, -3)}y`;
+  else if (/(ss|sh|ch|x|z)es$/.test(s)) s = s.slice(0, -2);
+  else if (s.endsWith('s') && !s.endsWith('ss') && s.length > 3) s = s.slice(0, -1);
+
+  if (s.endsWith('ing') && s.length > 5) s = s.slice(0, -3);
+  else if (s.endsWith('ed') && s.length > 4) s = s.slice(0, -2);
+  return s;
+}
+
+/** Meaningful lowercase word stems from a memory. */
+function keywords(text) {
+  const words = String(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s'-]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  const out = new Set();
+  for (const w of words) {
+    const clean = w.replace(/^['-]+|['-]+$/g, '');
+    if (clean.length < 4 || STOPWORDS.has(clean)) continue;
+    out.add(stem(clean));
+  }
+  return out;
+}
+
+/**
+ * Wire facts into a graph.
+ *
+ * Two kinds of synapse: a bright one where memories share a meaningful word,
+ * and a faint temporal thread between memories stored next to each other in
+ * time. The temporal backbone keeps the brain one connected organism — nothing
+ * floats alone — and gives it the density that makes it read as a brain.
+ *
+ * @param {Array<{id: string, text: string, at: number}>} facts
+ * @returns {{nodes: Array, edges: Array}}
+ */
+function buildGraph(facts) {
+  const nodes = facts.map((f, i) => ({
+    id: f.id,
+    text: f.text,
+    at: f.at,
+    index: i,
+    words: keywords(f.text),
+    degree: 0,
+  }));
+
+  const edges = [];
+  const pairs = new Set();
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      let shared = 0;
+      for (const w of nodes[i].words) if (nodes[j].words.has(w)) shared++;
+      if (!shared) continue;
+      edges.push({ a: i, b: j, weight: shared });
+      pairs.add(`${i}-${j}`);
+      nodes[i].degree++;
+      nodes[j].degree++;
+    }
+  }
+
+  // A temporal backbone: things you mentioned around the same time are
+  // associated too. This also guarantees nothing floats alone, and gives the
+  // graph the density that makes it read as a brain rather than a constellation.
+  const byTime = nodes.map((n) => n.index).sort((x, y) => nodes[x].at - nodes[y].at);
+  for (let k = 0; k + 1 < byTime.length; k++) {
+    const a = Math.min(byTime[k], byTime[k + 1]);
+    const b = Math.max(byTime[k], byTime[k + 1]);
+    const key = `${a}-${b}`;
+    if (pairs.has(key)) continue; // already wired by meaning
+    pairs.add(key);
+    edges.push({ a, b, weight: 0.35, temporal: true });
+    nodes[a].degree++;
+    nodes[b].degree++;
+  }
+
+  return { nodes, edges };
+}
+
+/** Canvas renderer: physics layout, pulses, and hover interaction. */
+class MindView {
+  constructor(canvas, { onHover } = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.onHover = onHover || (() => {});
+    this.nodes = [];
+    this.edges = [];
+    this.accent = '#34e7e4';
+    this.rgb = [52, 231, 228];
+    this.pointer = { x: -1e6, y: -1e6 };
+    this.hovered = null;
+    this.t = 0;
+    this.energy = 1;   // anneals to near-zero so the layout settles and holds still
+    this.running = false;
+    this.filter = '';
+
+    canvas.addEventListener('pointermove', (ev) => {
+      const r = canvas.getBoundingClientRect();
+      this.pointer = { x: ev.clientX - r.left, y: ev.clientY - r.top };
+    });
+    canvas.addEventListener('pointerleave', () => {
+      this.pointer = { x: -1e6, y: -1e6 };
+    });
+    window.addEventListener('resize', () => this.#resize());
+  }
+
+  setAccent(hex) {
+    this.accent = hex;
+    const c = hex.replace('#', '');
+    const full = c.length === 3 ? c.split('').map((x) => x + x).join('') : c;
+    this.rgb = [
+      parseInt(full.slice(0, 2), 16),
+      parseInt(full.slice(2, 4), 16),
+      parseInt(full.slice(4, 6), 16),
+    ];
+  }
+
+  /** Load facts, seeding positions in a ring so the layout settles fast. */
+  setFacts(facts) {
+    const { nodes, edges } = buildGraph(facts);
+    this.#resize();
+    const cx = this.w / 2;
+    const cy = this.h / 2;
+    const R = Math.min(this.w, this.h) * 0.28;
+
+    this.nodes = nodes.map((n, i) => {
+      const prev = this.nodes.find((p) => p.id === n.id);
+      const angle = (i / Math.max(1, nodes.length)) * Math.PI * 2;
+      return {
+        ...n,
+        x: prev ? prev.x : cx + Math.cos(angle) * R + (Math.random() - 0.5) * 20,
+        y: prev ? prev.y : cy + Math.sin(angle) * R + (Math.random() - 0.5) * 20,
+        vx: 0,
+        vy: 0,
+        // A per-node phase so pulses don't blink in lockstep.
+        phase: Math.random() * Math.PI * 2,
+        born: prev ? prev.born : performance.now(),
+      };
+    });
+    this.edges = edges;
+    this.energy = 1;
+  }
+
+  setFilter(query) {
+    this.filter = String(query || '').trim().toLowerCase();
+  }
+
+  /** Does this node match the current search? */
+  #matches(node) {
+    return !this.filter || node.text.toLowerCase().includes(this.filter);
+  }
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+    const loop = () => {
+      if (!this.running) return;
+      this.#step();
+      this.#draw();
+      this.raf = requestAnimationFrame(loop);
+    };
+    loop();
+  }
+
+  stop() {
+    this.running = false;
+    cancelAnimationFrame(this.raf);
+  }
+
+  #resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.w = rect.width || 1;
+    this.h = rect.height || 1;
+  }
+
+  /** One tick of a small force-directed layout. */
+  #step() {
+    this.t += 0.016;
+    const n = this.nodes.length;
+    if (!n) return;
+    const cx = this.w / 2;
+    const cy = this.h / 2;
+
+    // Repulsion — every neuron pushes every other apart.
+    for (let i = 0; i < n; i++) {
+      const a = this.nodes[i];
+      for (let j = i + 1; j < n; j++) {
+        const b = this.nodes[j];
+        let dx = a.x - b.x;
+        let dy = a.y - b.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) {
+          dx = Math.random() - 0.5;
+          dy = Math.random() - 0.5;
+          d2 = 1;
+        }
+        const force = Math.min(1400, 26000 / d2);
+        const d = Math.sqrt(d2);
+        const fx = (dx / d) * force;
+        const fy = (dy / d) * force;
+        a.vx += fx * 0.0009;
+        a.vy += fy * 0.0009;
+        b.vx -= fx * 0.0009;
+        b.vy -= fy * 0.0009;
+      }
+      // Gentle pull to centre keeps the brain from drifting off-screen.
+      a.vx += (cx - a.x) * 0.0011;
+      a.vy += (cy - a.y) * 0.0011;
+    }
+
+    // Springs along synapses.
+    const rest = Math.min(this.w, this.h) * 0.2;
+    for (const e of this.edges) {
+      const a = this.nodes[e.a];
+      const b = this.nodes[e.b];
+      if (!a || !b) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const d = Math.max(1, Math.hypot(dx, dy));
+      const pull = (d - rest) * 0.0015;
+      const fx = (dx / d) * pull;
+      const fy = (dy / d) * pull;
+      a.vx += fx;
+      a.vy += fy;
+      b.vx -= fx;
+      b.vy -= fy;
+    }
+
+    // Simulated annealing: lively at first, then it settles so memories stay
+    // put and are easy to hover.
+    this.energy += (0.06 - this.energy) * 0.012;
+    for (const p of this.nodes) {
+      p.vx *= 0.86;
+      p.vy *= 0.86;
+      p.x += p.vx * this.energy;
+      p.y += p.vy * this.energy;
+      const m = 40;
+      p.x = Math.max(m, Math.min(this.w - m, p.x));
+      p.y = Math.max(m, Math.min(this.h - m, p.y));
+    }
+
+    // Hover detection.
+    let best = null;
+    let bestD = 34;
+    for (const p of this.nodes) {
+      const d = Math.hypot(p.x - this.pointer.x, p.y - this.pointer.y);
+      if (d < bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    if (best?.id !== this.hovered?.id) {
+      this.hovered = best;
+      this.onHover(best);
+    }
+  }
+
+  #draw() {
+    const ctx = this.ctx;
+    const [r, g, b] = this.rgb;
+    ctx.clearRect(0, 0, this.w, this.h);
+    ctx.globalCompositeOperation = 'lighter';
+
+    // Synapses, with signals travelling along them.
+    for (const e of this.edges) {
+      const a = this.nodes[e.a];
+      const c = this.nodes[e.b];
+      if (!a || !c) continue;
+      const lit = this.#matches(a) && this.#matches(c);
+      const strength = Math.min(1, e.weight / 2);
+      // Meaning links are brighter than the faint temporal threads.
+      const base = e.temporal ? 0.07 : 0.18;
+      const alpha = lit ? base + strength * 0.26 : 0.03;
+
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      ctx.lineWidth = e.temporal ? 0.5 : 0.7 + strength * 1.3;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(c.x, c.y);
+      ctx.stroke();
+
+      if (!lit || e.temporal) continue;
+      // A pulse sliding from one neuron to the other.
+      const p = ((this.t * 0.35 + (e.a + e.b) * 0.17) % 1);
+      const px = a.x + (c.x - a.x) * p;
+      const py = a.y + (c.y - a.y) * p;
+      const fade = Math.sin(p * Math.PI);
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${0.55 * fade})`;
+      ctx.beginPath();
+      ctx.arc(px, py, 1.8 + strength, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Neurons.
+    for (const p of this.nodes) {
+      const lit = this.#matches(p);
+      const isHover = this.hovered?.id === p.id;
+      const breathe = 1 + Math.sin(this.t * 1.6 + p.phase) * 0.12;
+      // Newly stored memories flare briefly.
+      const age = (performance.now() - p.born) / 1400;
+      const flare = age < 1 ? (1 - age) : 0;
+      const radius = (4 + Math.min(5, p.degree) * 1.5) * breathe * (isHover ? 1.5 : 1) + flare * 8;
+
+      const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius * 4);
+      const glow = lit ? (isHover ? 0.5 : 0.26) + flare * 0.5 : 0.05;
+      halo.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${glow})`);
+      halo.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius * 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = lit
+        ? `rgba(255, 255, 255, ${isHover ? 0.98 : 0.8})`
+        : `rgba(${r}, ${g}, ${b}, 0.22)`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.globalCompositeOperation = 'source-over';
+  }
+}
+// --- end mind.js ---
+
 // --- app.js ---
 /**
  * JARVIS — wiring.
@@ -2703,6 +3296,9 @@ class Wave {
 const $ = (id) => document.getElementById(id);
 const MAX_TOOL_ROUNDS = 6;
 
+/** Where JARVIS is hosted, so it can be installed without running anything. */
+const HOSTED_URL = 'https://leonistuff67-commits.github.io/claude-first-pr/';
+
 const el = {
   hud: $('hud'), boot: $('boot'), bootBtn: $('boot-btn'), bootNote: $('boot-note'),
   orb: $('orb'), orbLabel: $('orb-label'), heard: $('heard'), transcript: $('transcript'), wave: $('wave'),
@@ -2713,6 +3309,9 @@ const el = {
   timers: $('timers'), tasks: $('tasks'), facts: $('facts'),
   taskCount: $('task-count'), factCount: $('fact-count'),
   toast: $('toast'), wipeBtn: $('wipe-btn'),
+  mind: $('mind'), mindCanvas: $('mind-canvas'), mindSearch: $('mind-search'),
+  mindClose: $('mind-close'), mindDetail: $('mind-detail'), mindStats: $('mind-stats'),
+  brainBtn: $('brain-btn'),
 };
 
 let busy = false;
@@ -2724,8 +3323,64 @@ let serious = false;
 const orb = new Orb(el.orb);
 const wave = new Wave(el.wave);
 
+// --- memory brain -----------------------------------------------------------
+
+const mind = new MindView(el.mindCanvas, {
+  onHover(node) {
+    if (!node) {
+      el.mindDetail.classList.remove('is-live');
+      el.mindDetail.innerHTML = '<p class="mind__hint">Hover a neuron to read the memory it holds.</p>';
+      return;
+    }
+    el.mindDetail.classList.add('is-live');
+    const when = new Date(node.at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+    el.mindDetail.innerHTML = '';
+    const text = document.createElement('p');
+    text.textContent = node.text;
+    const meta = document.createElement('p');
+    meta.className = 'mind__meta';
+    meta.textContent = `stored ${when} · ${node.degree} connection${node.degree === 1 ? '' : 's'}`;
+    el.mindDetail.append(text, meta);
+  },
+});
+
+function openMind() {
+  el.mind.hidden = false;
+  mind.setAccent(serious ? '#ff5f6d' : memory.settings.accent);
+  mind.setFilter(el.mindSearch.value);
+  mind.setFacts(memory.facts);
+  renderMindStats();
+  mind.start();
+  el.mindSearch.focus();
+}
+
+function closeMind() {
+  mind.stop();
+  el.mind.hidden = true;
+}
+
+function renderMindStats() {
+  const nodes = mind.nodes.length;
+  const links = mind.edges.length;
+  const busiest = mind.nodes.reduce((a, b) => (b.degree > (a?.degree ?? -1) ? b : a), null);
+  el.mindStats.innerHTML = '';
+  const stat = (value, label) => {
+    const div = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = value;
+    div.append(b, document.createTextNode(label));
+    return div;
+  };
+  el.mindStats.append(stat(String(nodes), 'memories'), stat(String(links), 'connections'));
+  if (busiest && busiest.degree > 0) {
+    el.mindStats.append(stat(String(busiest.degree), 'strongest link'));
+  }
+}
+
 function setState(state, label = state) {
   orb.setState(state);
+  // Expose the state to CSS so the shell can react (composer glow, etc).
+  document.body.dataset.state = state;
   // The spectrum bars light up while listening or speaking, idle otherwise.
   wave.setActive(state === 'listening' || state === 'speaking');
   el.orbLabel.textContent = serious && label === 'standby' ? 'serious' : label;
@@ -2738,6 +3393,7 @@ function setAccent(hex) {
   document.documentElement.style.setProperty('--accent', hex);
   orb.setAccent(hex);
   wave.setAccent(hex);
+  mind.setAccent(hex);
 }
 
 let toastTimer;
@@ -2783,6 +3439,12 @@ function renderLists() {
       li.textContent = f.text;
       el.facts.append(li);
     }
+  }
+
+  // Keep the brain in sync if it's open — a new memory grows a new neuron.
+  if (el.mind && !el.mind.hidden) {
+    mind.setFacts(memory.facts);
+    renderMindStats();
   }
 }
 
@@ -3284,7 +3946,8 @@ function setupInstall() {
     }
     // No native prompt available — say why and what to do instead.
     if (location.protocol === 'file:') {
-      toast('To install, run the JARVIS server and open http://localhost — then install from there.');
+      toast(`Open ${HOSTED_URL} in Chrome or Edge, then press Install there.`);
+      window.open(HOSTED_URL, '_blank', 'noopener');
     } else if (/safari/i.test(navigator.userAgent) && !/chrome|chromium|edg/i.test(navigator.userAgent)) {
       toast('In Safari: Share → Add to Dock (or Add to Home Screen) to install.');
     } else {
@@ -3375,6 +4038,13 @@ async function init() {
 
   setupInstall();
 
+  // Memory brain: open from the panel, close with the button or Escape.
+  el.brainBtn.addEventListener('click', openMind);
+  el.mindClose.addEventListener('click', closeMind);
+  el.mindSearch.addEventListener('input', (ev) => {
+    mind.setFilter(ev.target.value);
+  });
+
   el.bootBtn.addEventListener('click', boot, { once: true });
 
   el.composer.addEventListener('submit', (ev) => {
@@ -3391,8 +4061,17 @@ async function init() {
 
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') {
+      if (!el.mind.hidden) {
+        closeMind();
+        return;
+      }
       voice.cancelSpeech();
       engine().abort();
+      return;
+    }
+    // "B" opens the brain, unless you're typing.
+    if ((ev.key === 'b' || ev.key === 'B') && !['INPUT', 'TEXTAREA'].includes(ev.target.tagName)) {
+      if (el.mind.hidden) openMind();
       return;
     }
     // Space anywhere outside a text field starts a capture.

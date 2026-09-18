@@ -86,11 +86,35 @@
     </section>
 
     <section class="block block--grow">
-      <h2 class="block__title">Memory <span class="badge" id="fact-count">0</span></h2>
+      <h2 class="block__title">
+        Memory
+        <button type="button" class="block__action" id="brain-btn" title="Open the memory brain">brain</button>
+        <span class="badge" id="fact-count">0</span>
+      </h2>
       <ul class="list" id="facts"><li class="list__empty">nothing stored yet</li></ul>
     </section>
   </aside>
 </main>
+
+<!-- memory brain ---------------------------------------------------------- -->
+<div class="mind" id="mind" hidden>
+  <canvas id="mind-canvas" class="mind__canvas"></canvas>
+
+  <header class="mind__bar">
+    <div class="mind__title">
+      <span class="mind__eyebrow">memory</span>
+      <h2>The Brain</h2>
+    </div>
+    <input type="search" id="mind-search" class="mind__search" placeholder="Search memories…" />
+    <button type="button" class="mind__close" id="mind-close" aria-label="Close">esc</button>
+  </header>
+
+  <div class="mind__stats" id="mind-stats"></div>
+
+  <div class="mind__detail" id="mind-detail">
+    <p class="mind__hint">Hover a neuron to read the memory it holds.</p>
+  </div>
+</div>
 
 <!-- boot overlay --------------------------------------------------------- -->
 <div class="boot" id="boot">
