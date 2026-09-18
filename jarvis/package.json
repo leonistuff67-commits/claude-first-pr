@@ -1,0 +1,21 @@
+{
+  "name": "jarvis",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A voice-first AI assistant with a reactive orb, persistent memory, and client-side tools.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build": "node build.mjs",
+    "test": "node --test test/brain.test.mjs",
+    "test:e2e": "node test/e2e.mjs",
+    "test:bundle": "node build.mjs && node test/bundle.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.0"
+  }
+}

@@ -1,0 +1,2314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>JARVIS</title>
+<meta name="description" content="A voice-first AI assistant with a reactive orb, persistent memory and tools." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='34' fill='%2334e7e4'/></svg>" />
+<style>
+/* ---------------------------------------------------------------------------
+   JARVIS — dark HUD. One accent colour drives everything; JS rewrites
+   --accent when the set_accent tool fires.
+   ------------------------------------------------------------------------- */
+
+:root {
+  --accent: #34e7e4;
+  --bg: #04070c;
+  --bg-2: #070d16;
+  --panel: rgba(12, 20, 32, 0.55);
+  --line: rgba(255, 255, 255, 0.08);
+  --text: #dbe7f2;
+  --muted: #6c8199;
+  --danger: #ff5f6d;
+  --font: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--ui);
+  overflow: hidden;
+}
+
+body::before {
+  /* Slow ambient wash behind everything. */
+  content: "";
+  position: fixed;
+  inset: -20%;
+  background:
+    radial-gradient(45% 40% at 50% 45%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%),
+    radial-gradient(60% 50% at 80% 90%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 70%),
+    var(--bg-2);
+  filter: blur(40px);
+  z-index: -2;
+  transition: background 600ms ease;
+}
+
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.35;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.025) 0 1px, transparent 1px 3px);
+  mix-blend-mode: overlay;
+}
+
+/* --- layout -------------------------------------------------------------- */
+
+.hud {
+  display: grid;
+  grid-template-columns: minmax(200px, 250px) 1fr minmax(200px, 250px);
+  gap: 20px;
+  height: 100%;
+  padding: 20px;
+  opacity: 0;
+  transition: opacity 700ms ease 150ms;
+}
+.hud.is-live { opacity: 1; }
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.block {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  backdrop-filter: blur(14px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.block--grow { flex: 1; }
+
+.block__title {
+  margin: 0 0 10px;
+  font: 600 10px/1 var(--font);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.badge {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+}
+
+/* --- clock --------------------------------------------------------------- */
+
+.clock { padding: 4px 2px 0; }
+.clock__time {
+  font: 300 44px/1 var(--font);
+  letter-spacing: -0.02em;
+  color: #fff;
+  text-shadow: 0 0 26px color-mix(in srgb, var(--accent) 55%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+.clock__date {
+  margin-top: 6px;
+  font: 400 11px/1.4 var(--font);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* --- stats & lists ------------------------------------------------------- */
+
+.stats { margin: 0; font: 400 12px/1.6 var(--font); }
+.stats > div { display: flex; justify-content: space-between; gap: 10px; }
+.stats dt { color: var(--muted); }
+.stats dd { margin: 0; color: var(--text); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  font: 400 12.5px/1.5 var(--ui);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-height: 0;
+}
+.list li {
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  word-break: break-word;
+}
+.list li.is-done { opacity: 0.4; text-decoration: line-through; border-left-color: var(--muted); }
+.list__empty {
+  background: none !important;
+  border-left-color: transparent !important;
+  color: var(--muted);
+  font-style: italic;
+  padding-left: 0 !important;
+}
+.list::-webkit-scrollbar { width: 6px; }
+.list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+
+/* --- stage --------------------------------------------------------------- */
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  gap: 10px;
+}
+
+.orb-wrap {
+  /* Square, so the glow and the tilted rings never get cropped by the canvas. */
+  position: relative;
+  flex: 0 1 auto;
+  aspect-ratio: 1;
+  height: min(46vh, 460px);
+  min-height: 190px;
+}
+#orb { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.orb-label {
+  font: 500 10px/1 var(--font);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--accent) 85%, white);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.heard {
+  margin: 0;
+  min-height: 18px;
+  font: 400 13px/1.3 var(--font);
+  color: var(--muted);
+  text-align: center;
+  max-width: 70ch;
+}
+.heard.is-live { color: color-mix(in srgb, var(--accent) 80%, white); }
+
+.transcript {
+  width: min(760px, 100%);
+  max-height: 32vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px;
+  scroll-behavior: smooth;
+}
+.transcript::-webkit-scrollbar { width: 6px; }
+.transcript::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+
+.msg {
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 14px;
+  line-height: 1.55;
+  max-width: 82%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  animation: rise 260ms ease both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+
+.msg--user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.msg--jarvis {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--line);
+}
+.msg--tool {
+  align-self: center;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font: 400 11px/1.4 var(--font);
+  letter-spacing: 0.06em;
+  padding: 0;
+}
+.msg--error {
+  align-self: center;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  color: #ffd6da;
+  font-size: 13px;
+}
+
+/* --- composer ------------------------------------------------------------ */
+
+.composer {
+  width: min(760px, 100%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+}
+.composer input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font: 400 14px/1 var(--ui);
+  padding: 0 8px;
+}
+.composer input::placeholder { color: var(--muted); }
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 160ms, background 160ms, border-color 160ms, transform 120ms;
+}
+.icon-btn:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.icon-btn:active { transform: scale(0.94); }
+.icon-btn.is-hot {
+  color: #04070c;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 22px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+/* --- boot ---------------------------------------------------------------- */
+
+.boot {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(60% 60% at 50% 50%, #081019, #02040a 75%);
+  z-index: 20;
+  transition: opacity 600ms ease, visibility 600ms;
+}
+.boot.is-gone { opacity: 0; visibility: hidden; pointer-events: none; }
+
+.boot__inner { text-align: center; max-width: 440px; padding: 24px; }
+.boot__title {
+  margin: 0;
+  font: 200 68px/1 var(--font);
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  color: #fff;
+  text-shadow: 0 0 44px color-mix(in srgb, var(--accent) 70%, transparent);
+  animation: flicker 4s infinite;
+}
+@keyframes flicker {
+  0%, 92%, 100% { opacity: 1; }
+  93% { opacity: 0.55; }
+  95% { opacity: 1; }
+  96% { opacity: 0.7; }
+}
+.boot__sub {
+  margin: 14px auto 32px;
+  max-width: 30ch;
+  text-indent: 0.24em;
+  text-wrap: balance;
+  font: 400 11px/1.9 var(--font);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.boot__btn {
+  padding: 13px 40px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font: 600 12px/1 var(--font);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 200ms, box-shadow 200ms, transform 120ms;
+}
+.boot__btn:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  box-shadow: 0 0 34px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.boot__btn:active { transform: scale(0.97); }
+.boot__note {
+  margin: 26px auto 0;
+  max-width: 34ch;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+/* --- settings ------------------------------------------------------------ */
+
+.settings {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #080e17;
+  color: var(--text);
+  padding: 0;
+  width: min(440px, 92vw);
+  max-height: 86vh;
+}
+.settings::backdrop { background: rgba(2, 4, 10, 0.72); backdrop-filter: blur(4px); }
+.settings__form { padding: 22px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; max-height: 86vh; }
+.settings h2 { margin: 0 0 4px; font: 600 12px/1 var(--font); letter-spacing: 0.24em; text-transform: uppercase; color: var(--muted); }
+
+.field { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.field--row { flex-direction: row; align-items: center; gap: 10px; }
+.field small { color: #4d6479; font-size: 11px; }
+.field input[type="text"],
+.field input[type="password"],
+.field select {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  padding: 9px 11px;
+  font: 400 13px/1 var(--ui);
+  outline: none;
+}
+.field input:focus, .field select:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.field input[type="range"] { accent-color: var(--accent); }
+.field input[type="color"] { width: 54px; height: 32px; padding: 2px; background: none; border: 1px solid var(--line); border-radius: 8px; }
+.field input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+
+.settings__actions { display: flex; gap: 10px; justify-content: space-between; margin-top: 6px; }
+.settings__actions button {
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: 500 12px/1 var(--ui);
+  cursor: pointer;
+}
+.settings__actions .primary { background: var(--accent); border-color: var(--accent); color: #04070c; font-weight: 600; }
+.settings__actions .danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+
+/* --- toast --------------------------------------------------------------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translate(-50%, 20px);
+  padding: 11px 20px;
+  border-radius: 999px;
+  background: rgba(8, 14, 23, 0.94);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 240ms, transform 240ms;
+  z-index: 30;
+  max-width: 80vw;
+  text-align: center;
+}
+.toast.is-up { opacity: 1; transform: translate(-50%, 0); }
+
+/* --- narrow screens ------------------------------------------------------ */
+
+@media (max-width: 900px) {
+  .hud { grid-template-columns: 1fr; grid-template-rows: auto 1fr; padding: 12px; gap: 12px; }
+  .panel--left { flex-direction: row; overflow-x: auto; }
+  .panel--left .clock { flex: 0 0 auto; }
+  .panel--left .block { flex: 1 0 45%; }
+  .panel--right { display: none; }
+  .transcript { max-height: 26vh; }
+  .boot__title { font-size: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+</style>
+</head>
+<body>
+
+<div class="grain" aria-hidden="true"></div>
+
+<main class="hud" id="hud">
+
+  <!-- left column ------------------------------------------------------- -->
+  <aside class="panel panel--left">
+    <section class="clock">
+      <div class="clock__time" id="clock-time">--:--</div>
+      <div class="clock__date" id="clock-date">&nbsp;</div>
+    </section>
+
+    <section class="block">
+      <h2 class="block__title">System</h2>
+      <dl class="stats" id="stats">
+        <div><dt>Status</dt><dd id="stat-status">standby</dd></div>
+        <div><dt>Model</dt><dd id="stat-model">—</dd></div>
+        <div><dt>Link</dt><dd id="stat-link">—</dd></div>
+        <div><dt>Voice</dt><dd id="stat-voice">—</dd></div>
+      </dl>
+    </section>
+
+    <section class="block">
+      <h2 class="block__title">Timers</h2>
+      <ul class="list" id="timers"><li class="list__empty">none running</li></ul>
+    </section>
+  </aside>
+
+  <!-- center ------------------------------------------------------------ -->
+  <section class="stage">
+    <div class="orb-wrap">
+      <canvas id="orb" aria-hidden="true"></canvas>
+    </div>
+    <div class="orb-label" id="orb-label">standby</div>
+
+    <p class="heard" id="heard"></p>
+
+    <div class="transcript" id="transcript" aria-live="polite"></div>
+
+    <form class="composer" id="composer" autocomplete="off">
+      <button type="button" class="icon-btn" id="mic-btn" title="Talk (or hold Space)" aria-label="Talk">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3Z" fill="currentColor"/>
+          <path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <input id="composer-input" type="text" placeholder="Say &ldquo;Jarvis&hellip;&rdquo; or type here" />
+      <button type="submit" class="icon-btn" title="Send" aria-label="Send">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path d="M4 12h15M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button type="button" class="icon-btn" id="settings-btn" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="2" fill="none"/>
+          <path d="M12 2.8v2.6M12 18.6v2.6M21.2 12h-2.6M5.4 12H2.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8M18.5 18.5l-1.8-1.8M7.3 7.3 5.5 5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </form>
+  </section>
+
+  <!-- right column ------------------------------------------------------ -->
+  <aside class="panel panel--right">
+    <section class="block">
+      <h2 class="block__title">Tasks <span class="badge" id="task-count">0</span></h2>
+      <ul class="list" id="tasks"><li class="list__empty">nothing queued</li></ul>
+    </section>
+
+    <section class="block block--grow">
+      <h2 class="block__title">Memory <span class="badge" id="fact-count">0</span></h2>
+      <ul class="list" id="facts"><li class="list__empty">nothing stored yet</li></ul>
+    </section>
+  </aside>
+</main>
+
+<!-- boot overlay --------------------------------------------------------- -->
+<div class="boot" id="boot">
+  <div class="boot__inner">
+    <h1 class="boot__title">JARVIS</h1>
+    <p class="boot__sub">voice interface &middot; persistent memory &middot; local tools</p>
+    <button class="boot__btn" id="boot-btn">Initialize</button>
+    <p class="boot__note" id="boot-note">
+      Grants microphone access so the wake word works. Everything it remembers stays in this browser.
+    </p>
+  </div>
+</div>
+
+<!-- settings ------------------------------------------------------------- -->
+<dialog class="settings" id="settings">
+  <form method="dialog" class="settings__form" id="settings-form">
+    <h2>Settings</h2>
+
+    <label class="field" id="field-key">
+      <span>Anthropic API key</span>
+      <input type="password" id="set-key" placeholder="sk-ant-..." />
+      <small id="key-note">Stored in this browser only.</small>
+    </label>
+
+    <label class="field">
+      <span>Model</span>
+      <select id="set-model">
+        <option value="claude-opus-5">Claude Opus 5 — sharpest</option>
+        <option value="claude-sonnet-5">Claude Sonnet 5 — cheaper</option>
+        <option value="claude-haiku-4-5">Claude Haiku 4.5 — fastest</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span>Effort</span>
+      <select id="set-effort">
+        <option value="low">Low — snappiest for conversation</option>
+        <option value="medium">Medium</option>
+        <option value="high">High — thinks harder, replies slower</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span>Wake word</span>
+      <input type="text" id="set-wake" placeholder="jarvis" />
+    </label>
+
+    <label class="field">
+      <span>Your name <small>(used in the system prompt)</small></span>
+      <input type="text" id="set-name" placeholder="optional" />
+    </label>
+
+    <label class="field field--row">
+      <input type="checkbox" id="set-speak" />
+      <span>Speak replies out loud</span>
+    </label>
+
+    <label class="field field--row">
+      <input type="checkbox" id="set-always" />
+      <span>Always listen for the wake word</span>
+    </label>
+
+    <label class="field">
+      <span>Voice</span>
+      <select id="set-voice"><option value="">Automatic</option></select>
+    </label>
+
+    <label class="field">
+      <span>Speech rate <output id="rate-out"></output></span>
+      <input type="range" id="set-rate" min="0.6" max="1.6" step="0.05" />
+    </label>
+
+    <label class="field">
+      <span>Accent colour</span>
+      <input type="color" id="set-accent" />
+    </label>
+
+    <div class="settings__actions">
+      <button type="button" class="danger" id="wipe-btn">Erase memory</button>
+      <button value="close" class="primary">Done</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(function () {
+'use strict';
+
+// --- memory.js ---
+/**
+ * Persistent state for JARVIS: settings, long-term facts, tasks and timers.
+ * Everything lives in localStorage, so it survives reloads but never leaves
+ * the machine.
+ */
+const KEY = 'jarvis.state.v1';
+
+const DEFAULTS = {
+  settings: {
+    apiKey: '',              // only used when the server has no key of its own
+    model: 'claude-opus-5',
+    effort: 'low',           // voice wants latency over deliberation
+    wakeWord: 'jarvis',
+    alwaysListen: true,
+    speak: true,
+    voiceURI: '',
+    rate: 1.05,
+    pitch: 0.9,
+    accent: '#34e7e4',
+    webSearch: false,
+    name: '',
+  },
+  facts: [],     // { id, text, at }
+  tasks: [],     // { id, text, done, at }
+  history: [],   // Messages API content, trimmed to the last N turns
+};
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return clone(DEFAULTS);
+    const saved = JSON.parse(raw);
+    return {
+      ...clone(DEFAULTS),
+      ...saved,
+      settings: { ...DEFAULTS.settings, ...(saved.settings || {}) },
+    };
+  } catch {
+    return clone(DEFAULTS);
+  }
+}
+
+const state = load();
+const listeners = new Set();
+
+function persist() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(state));
+  } catch {
+    // Quota exceeded or storage disabled — degrade to in-memory only.
+  }
+  for (const fn of listeners) fn(state);
+}
+
+function id() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+const memory = {
+  state,
+
+  subscribe(fn) {
+    listeners.add(fn);
+    fn(state);
+    return () => listeners.delete(fn);
+  },
+
+  get settings() {
+    return state.settings;
+  },
+
+  setSetting(key, value) {
+    state.settings[key] = value;
+    persist();
+  },
+
+  // --- long-term facts -----------------------------------------------------
+
+  remember(text) {
+    const fact = { id: id(), text: String(text).trim(), at: Date.now() };
+    if (!fact.text) return null;
+    state.facts.push(fact);
+    persist();
+    return fact;
+  },
+
+  recall(query = '') {
+    const q = String(query).toLowerCase().trim();
+    if (!q) return state.facts.slice(-25);
+    return state.facts.filter((f) => f.text.toLowerCase().includes(q));
+  },
+
+  forget(query) {
+    const q = String(query).toLowerCase().trim();
+    const before = state.facts.length;
+    state.facts = state.facts.filter(
+      (f) => f.id !== query && !(q && f.text.toLowerCase().includes(q)),
+    );
+    persist();
+    return before - state.facts.length;
+  },
+
+  // --- tasks ---------------------------------------------------------------
+
+  addTask(text) {
+    const task = { id: id(), text: String(text).trim(), done: false, at: Date.now() };
+    if (!task.text) return null;
+    state.tasks.push(task);
+    persist();
+    return task;
+  },
+
+  completeTask(query) {
+    const q = String(query).toLowerCase().trim();
+    const task = state.tasks.find(
+      (t) => !t.done && (t.id === query || t.text.toLowerCase().includes(q)),
+    );
+    if (task) {
+      task.done = true;
+      persist();
+    }
+    return task;
+  },
+
+  clearDoneTasks() {
+    state.tasks = state.tasks.filter((t) => !t.done);
+    persist();
+  },
+
+  get tasks() {
+    return state.tasks;
+  },
+
+  get facts() {
+    return state.facts;
+  },
+
+  // --- conversation --------------------------------------------------------
+
+  get history() {
+    return state.history;
+  },
+
+  pushHistory(message) {
+    state.history.push(message);
+    // Keep the transcript bounded so the request stays small and fast.
+    if (state.history.length > 40) state.history = state.history.slice(-40);
+    persist();
+  },
+
+  replaceHistory(messages) {
+    state.history = messages.slice(-40);
+    persist();
+  },
+
+  clearHistory() {
+    state.history = [];
+    persist();
+  },
+
+  wipe() {
+    Object.assign(state, clone(DEFAULTS), { settings: state.settings });
+    persist();
+  },
+};
+// --- end memory.js ---
+
+// --- tools.js ---
+/**
+ * Client-side tools. Each entry pairs a Messages API tool definition with the
+ * handler that runs in the browser when Claude calls it. Handlers return a
+ * string (or a promise for one) which is sent back as the tool_result.
+ */
+
+const timers = new Map();
+
+function fmtDuration(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  return [h && `${h}h`, m && `${m}m`, (r || !s) && `${r}s`].filter(Boolean).join(' ');
+}
+
+/**
+ * @param {object} ctx  Hooks back into the app: { say, notify, setAccent, onTimers }
+ */
+function createTools(ctx) {
+  const defs = [
+    {
+      name: 'get_datetime',
+      description:
+        "Get the user's current local date, time and timezone. Use this whenever the " +
+        'answer depends on "now" — never guess the time.',
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'remember',
+      description:
+        'Store a durable fact about the user (preferences, names, routines, context worth ' +
+        'keeping). Store one fact per call, phrased so it still makes sense weeks later.',
+      input_schema: {
+        type: 'object',
+        properties: { fact: { type: 'string', description: 'The fact to remember.' } },
+        required: ['fact'],
+      },
+    },
+    {
+      name: 'recall',
+      description:
+        'Search stored facts about the user. Known facts are already in your system prompt; ' +
+        'use this only to search beyond what you were given.',
+      input_schema: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'Substring to search for. Empty returns recent facts.' } },
+        required: [],
+      },
+    },
+    {
+      name: 'forget',
+      description: 'Delete stored facts matching a phrase. Confirm with the user before calling.',
+      input_schema: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'Phrase identifying the fact(s) to delete.' } },
+        required: ['query'],
+      },
+    },
+    {
+      name: 'add_task',
+      description: "Add an item to the user's task board.",
+      input_schema: {
+        type: 'object',
+        properties: { task: { type: 'string' } },
+        required: ['task'],
+      },
+    },
+    {
+      name: 'list_tasks',
+      description: 'List the tasks on the board with their status.',
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'complete_task',
+      description: 'Mark a task done by describing it.',
+      input_schema: {
+        type: 'object',
+        properties: { task: { type: 'string', description: 'Text identifying the task.' } },
+        required: ['task'],
+      },
+    },
+    {
+      name: 'set_timer',
+      description:
+        'Start a countdown timer. JARVIS announces it out loud when it fires. Convert any ' +
+        'spoken duration ("ten minutes", "an hour and a half") into seconds yourself.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          seconds: { type: 'number', description: 'Duration in seconds.' },
+          label: { type: 'string', description: 'What the timer is for, e.g. "pasta".' },
+        },
+        required: ['seconds'],
+      },
+    },
+    {
+      name: 'cancel_timer',
+      description: 'Cancel a running timer by label, or all of them.',
+      input_schema: {
+        type: 'object',
+        properties: { label: { type: 'string', description: 'Label to cancel. Omit to cancel everything.' } },
+        required: [],
+      },
+    },
+    {
+      name: 'set_accent',
+      description:
+        "Recolor the interface. Accepts a CSS hex color. Use when the user asks JARVIS to " +
+        'change its look or mood.',
+      input_schema: {
+        type: 'object',
+        properties: { color: { type: 'string', description: 'Hex color such as #ff5f6d.' } },
+        required: ['color'],
+      },
+    },
+    {
+      name: 'open_url',
+      description:
+        'Open a URL in a new browser tab. Only call this when the user clearly asked to open ' +
+        'or go to something.',
+      input_schema: {
+        type: 'object',
+        properties: { url: { type: 'string', description: 'Absolute https:// URL.' } },
+        required: ['url'],
+      },
+    },
+    {
+      name: 'system_status',
+      description:
+        'Read the local device status: battery level, charging state, network type and screen ' +
+        'size. Use for "how am I doing on battery" style questions.',
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+  ];
+
+  const handlers = {
+    get_datetime() {
+      const now = new Date();
+      return JSON.stringify({
+        iso: now.toISOString(),
+        local: now.toLocaleString(),
+        weekday: now.toLocaleDateString(undefined, { weekday: 'long' }),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      });
+    },
+
+    remember({ fact }) {
+      const stored = memory.remember(fact);
+      return stored ? `Stored: "${stored.text}"` : 'Nothing to store — the fact was empty.';
+    },
+
+    recall({ query = '' }) {
+      const hits = memory.recall(query);
+      if (!hits.length) return 'No stored facts match that.';
+      return hits.map((f) => `- ${f.text}`).join('\n');
+    },
+
+    forget({ query }) {
+      const n = memory.forget(query);
+      return n ? `Deleted ${n} fact(s) matching "${query}".` : `Nothing matched "${query}".`;
+    },
+
+    add_task({ task }) {
+      const added = memory.addTask(task);
+      return added ? `Added to the board: "${added.text}"` : 'Nothing to add.';
+    },
+
+    list_tasks() {
+      const list = memory.tasks;
+      if (!list.length) return 'The task board is empty.';
+      return list.map((t) => `[${t.done ? 'x' : ' '}] ${t.text}`).join('\n');
+    },
+
+    complete_task({ task }) {
+      const done = memory.completeTask(task);
+      return done ? `Marked done: "${done.text}"` : `No open task matches "${task}".`;
+    },
+
+    set_timer({ seconds, label = 'timer' }) {
+      const secs = Number(seconds);
+      if (!Number.isFinite(secs) || secs <= 0) return 'Invalid duration.';
+      const key = String(label).toLowerCase();
+      clearTimeout(timers.get(key)?.handle);
+      const handle = setTimeout(() => {
+        timers.delete(key);
+        ctx.onTimers?.([...timers.values()]);
+        ctx.notify?.(`Timer done: ${label}`);
+        ctx.say?.(`Your ${label} timer is up.`);
+      }, secs * 1000);
+      timers.set(key, { handle, label, endsAt: Date.now() + secs * 1000 });
+      ctx.onTimers?.([...timers.values()]);
+      return `Timer "${label}" set for ${fmtDuration(secs)}.`;
+    },
+
+    cancel_timer({ label } = {}) {
+      if (!label) {
+        const n = timers.size;
+        for (const t of timers.values()) clearTimeout(t.handle);
+        timers.clear();
+        ctx.onTimers?.([]);
+        return n ? `Cancelled ${n} timer(s).` : 'No timers were running.';
+      }
+      const key = String(label).toLowerCase();
+      const found = timers.get(key);
+      if (!found) return `No timer named "${label}".`;
+      clearTimeout(found.handle);
+      timers.delete(key);
+      ctx.onTimers?.([...timers.values()]);
+      return `Cancelled the "${label}" timer.`;
+    },
+
+    set_accent({ color }) {
+      const hex = String(color).trim();
+      if (!/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(hex)) return `"${color}" is not a hex color.`;
+      ctx.setAccent?.(hex);
+      memory.setSetting('accent', hex);
+      return `Accent set to ${hex}.`;
+    },
+
+    open_url({ url }) {
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch {
+        return `"${url}" is not a valid URL.`;
+      }
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        return 'Only http(s) URLs can be opened.';
+      }
+      window.open(parsed.href, '_blank', 'noopener');
+      return `Opened ${parsed.href}.`;
+    },
+
+    async system_status() {
+      const status = {
+        screen: `${window.screen.width}x${window.screen.height}`,
+        online: navigator.onLine,
+        language: navigator.language,
+      };
+      const conn = navigator.connection;
+      if (conn) status.network = { type: conn.effectiveType, downlinkMbps: conn.downlink };
+      if (navigator.getBattery) {
+        try {
+          const b = await navigator.getBattery();
+          status.battery = { percent: Math.round(b.level * 100), charging: b.charging };
+        } catch {
+          // Battery API refused; leave it out.
+        }
+      }
+      return JSON.stringify(status);
+    },
+  };
+
+  return {
+    definitions: defs,
+
+    /** Run a tool_use block and return its string result. */
+    async run(name, input) {
+      const fn = handlers[name];
+      if (!fn) return `Unknown tool "${name}".`;
+      try {
+        return String(await fn(input || {}));
+      } catch (err) {
+        return `Tool "${name}" failed: ${err.message}`;
+      }
+    },
+
+    activeTimers() {
+      return [...timers.values()];
+    },
+  };
+}
+// --- end tools.js ---
+
+// --- brain.js ---
+/**
+ * The talking-to-Claude half of JARVIS.
+ *
+ * Streams the Messages API over SSE and rebuilds the assistant's content
+ * blocks as they arrive, so the UI can render text and the voice can start
+ * speaking before the turn is finished.
+ *
+ * Two transports:
+ *   - proxy mode  (default) -> POST /api/chat, key stays on the server
+ *   - direct mode (fallback) -> api.anthropic.com from the browser, using a key
+ *     the user pasted into settings
+ */
+const API_URL = 'https://api.anthropic.com/v1/messages';
+const API_VERSION = '2023-06-01';
+
+/** Deliberately short: this is a spoken assistant, not an essay writer. */
+const MAX_TOKENS = 4096;
+
+class Brain {
+  /** @param {{ proxy: boolean, getSettings: () => object }} options */
+  constructor({ proxy, getSettings }) {
+    this.proxy = proxy;
+    this.getSettings = getSettings;
+    this.controller = null;
+  }
+
+  abort() {
+    this.controller?.abort();
+    this.controller = null;
+  }
+
+  /**
+   * Run one streamed turn.
+   *
+   * @param {object} req  { system, messages, tools }
+   * @param {object} on   { text, toolUse, blockStart } callbacks
+   * @returns {Promise<{content: object[], stopReason: string|null, model: string|null}>}
+   */
+  async stream({ system, messages, tools }, on = {}) {
+    const settings = this.getSettings();
+    const body = {
+      model: settings.model,
+      max_tokens: MAX_TOKENS,
+      system,
+      messages,
+      stream: true,
+      output_config: { effort: settings.effort || 'low' },
+    };
+    if (tools?.length) body.tools = tools;
+
+    this.controller = new AbortController();
+    const [url, init] = this.#request(body);
+    const res = await fetch(url, init);
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(this.#explain(res.status, detail));
+    }
+
+    return this.#consume(res, on);
+  }
+
+  #request(body) {
+    const settings = this.getSettings();
+    if (this.proxy) {
+      return [
+        '/api/chat',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: this.controller.signal,
+        },
+      ];
+    }
+    if (!settings.apiKey) {
+      throw new Error('No API key. Add one in settings, or start the server with ANTHROPIC_API_KEY set.');
+    }
+    return [
+      API_URL,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': settings.apiKey,
+          'anthropic-version': API_VERSION,
+          // Required to call the API straight from a browser.
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify(body),
+        signal: this.controller.signal,
+      },
+    ];
+  }
+
+  #explain(status, detail) {
+    let message = detail;
+    try {
+      message = JSON.parse(detail)?.error?.message || JSON.parse(detail)?.error || detail;
+    } catch {
+      // Non-JSON error body; use it as-is.
+    }
+    if (status === 401) return 'The API key was rejected (401). Check it in settings.';
+    if (status === 429) return 'Rate limited (429). Give it a moment and try again.';
+    if (status === 501) return String(message);
+    return `API error ${status}: ${message || 'no detail'}`;
+  }
+
+  /** Parse the SSE stream into finished content blocks. */
+  async #consume(res, on) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const blocks = [];
+    let stopReason = null;
+    let model = null;
+    let buffer = '';
+    const partialJson = new Map(); // block index -> accumulated input_json_delta
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE frames are separated by a blank line.
+      let split;
+      while ((split = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, split);
+        buffer = buffer.slice(split + 2);
+
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
+        if (!dataLine) continue;
+
+        let event;
+        try {
+          event = JSON.parse(dataLine.slice(5).trim());
+        } catch {
+          continue;
+        }
+
+        switch (event.type) {
+          case 'message_start':
+            model = event.message?.model || null;
+            break;
+
+          case 'content_block_start': {
+            const block = structuredClone(event.content_block);
+            blocks[event.index] = block;
+            if (block.type === 'tool_use' || block.type === 'server_tool_use') {
+              partialJson.set(event.index, '');
+            }
+            on.blockStart?.(block);
+            break;
+          }
+
+          case 'content_block_delta': {
+            const block = blocks[event.index];
+            const delta = event.delta;
+            if (!block || !delta) break;
+            if (delta.type === 'text_delta') {
+              block.text = (block.text || '') + delta.text;
+              on.text?.(delta.text);
+            } else if (delta.type === 'thinking_delta') {
+              block.thinking = (block.thinking || '') + delta.thinking;
+            } else if (delta.type === 'signature_delta') {
+              block.signature = (block.signature || '') + delta.signature;
+            } else if (delta.type === 'input_json_delta') {
+              partialJson.set(event.index, (partialJson.get(event.index) || '') + delta.partial_json);
+            }
+            break;
+          }
+
+          case 'content_block_stop': {
+            const block = blocks[event.index];
+            if (block && partialJson.has(event.index)) {
+              const raw = partialJson.get(event.index);
+              // Tool inputs always arrive as JSON text; an empty string means no args.
+              try {
+                block.input = raw ? JSON.parse(raw) : {};
+              } catch {
+                block.input = {};
+                block._parseError = raw;
+              }
+              partialJson.delete(event.index);
+              if (block.type === 'tool_use') on.toolUse?.(block);
+            }
+            break;
+          }
+
+          case 'message_delta':
+            stopReason = event.delta?.stop_reason ?? stopReason;
+            break;
+
+          case 'error':
+            throw new Error(event.error?.message || 'Stream error');
+
+          default:
+            break;
+        }
+      }
+    }
+
+    this.controller = null;
+    return { content: blocks.filter(Boolean), stopReason, model };
+  }
+}
+// --- end brain.js ---
+
+// --- voice.js ---
+/**
+ * Ears and mouth.
+ *
+ * Ears: continuous Web Speech recognition that idles on a wake word, then
+ * captures an utterance and commits it after a beat of silence.
+ * Mouth: speechSynthesis fed sentence-by-sentence so JARVIS starts talking
+ * while the model is still writing.
+ *
+ * Also owns the mic analyser, which gives the orb something real to react to.
+ */
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+/** Words that interrupt JARVIS mid-sentence. */
+const BARGE_IN = ['stop', 'shut up', 'quiet', 'cancel', 'nevermind', 'never mind'];
+
+/** Voices that sound least like a 2003 GPS, in rough order of preference. */
+const VOICE_PREFERENCES = [
+  'Google UK English Male', 'Daniel', 'Google US English', 'Samantha',
+  'Alex', 'Microsoft Guy', 'Microsoft Ryan',
+];
+
+const SILENCE_MS = 1200;
+
+class Voice {
+  static get supported() {
+    return Boolean(SpeechRecognition);
+  }
+
+  constructor({ getSettings, on = {} }) {
+    this.getSettings = getSettings;
+    this.on = on;
+    this.mode = 'off';          // off | idle | capturing
+    this.recognition = null;
+    this.wantsRecognition = false;
+    this.suppressed = false;    // true while JARVIS is talking (echo guard)
+    this.captured = '';
+    this.silenceTimer = null;
+    this.speaking = false;
+    this.ttsBuffer = '';
+    this.analyser = null;
+    this.micData = null;
+    this.speechEnvelope = 0;
+    this.restartDelay = 250;
+  }
+
+  // --- microphone ----------------------------------------------------------
+
+  /** Ask for the mic and wire up an analyser. Safe to call more than once. */
+  async enableMic() {
+    if (this.analyser) return true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.75;
+      source.connect(analyser);
+      this.audioContext = ctx;
+      this.analyser = analyser;
+      this.micData = new Uint8Array(analyser.frequencyBinCount);
+      return true;
+    } catch (err) {
+      this.on.error?.(`Microphone unavailable: ${err.message}`);
+      return false;
+    }
+  }
+
+  /** Current input loudness, 0..1. Falls back to the speech envelope while talking. */
+  level() {
+    if (this.speaking) return this.speechEnvelope;
+    if (!this.analyser) return 0;
+    this.analyser.getByteFrequencyData(this.micData);
+    let sum = 0;
+    for (let i = 0; i < this.micData.length; i++) sum += this.micData[i];
+    const avg = sum / this.micData.length / 255;
+    return Math.min(1, avg * 2.6);
+  }
+
+  // --- recognition ---------------------------------------------------------
+
+  start() {
+    if (!SpeechRecognition) {
+      this.on.error?.('This browser has no speech recognition. Use the text box instead.');
+      return false;
+    }
+    this.wantsRecognition = true;
+    this.#spinUp();
+    return true;
+  }
+
+  stop() {
+    this.wantsRecognition = false;
+    this.mode = 'off';
+    try {
+      this.recognition?.stop();
+    } catch {
+      // Already stopped.
+    }
+    this.on.mode?.('off');
+  }
+
+  /** Skip the wake word and start capturing immediately (button / spacebar). */
+  listenNow() {
+    if (!this.wantsRecognition) this.start();
+    this.cancelSpeech();
+    this.#enterCapture('');
+  }
+
+  #spinUp() {
+    if (!this.wantsRecognition || this.recognition) return;
+    const rec = new SpeechRecognition();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = navigator.language || 'en-US';
+
+    rec.onresult = (event) => this.#onResult(event);
+    rec.onerror = (event) => {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        this.wantsRecognition = false;
+        this.on.error?.('Microphone permission denied — speech recognition is off.');
+      } else if (event.error === 'audio-capture') {
+        this.wantsRecognition = false;
+        this.on.error?.('No microphone found.');
+      }
+      // 'no-speech' and 'network' are routine; onend handles the restart.
+    };
+    rec.onend = () => {
+      this.recognition = null;
+      if (!this.wantsRecognition) {
+        this.on.mode?.('off');
+        return;
+      }
+      // Chrome ends the session every so often; bring it straight back.
+      setTimeout(() => this.#spinUp(), this.restartDelay);
+    };
+
+    try {
+      rec.start();
+      this.recognition = rec;
+      if (this.mode === 'off') this.#enterIdle();
+    } catch {
+      // start() throws if a session is somehow still alive; the retry covers it.
+      setTimeout(() => this.#spinUp(), 500);
+    }
+  }
+
+  #enterIdle() {
+    this.mode = 'idle';
+    this.captured = '';
+    clearTimeout(this.silenceTimer);
+    this.on.mode?.('idle');
+  }
+
+  #enterCapture(seed) {
+    this.mode = 'capturing';
+    this.captured = seed;
+    this.on.mode?.('capturing');
+    this.on.wake?.();
+    this.#armSilence();
+  }
+
+  #armSilence() {
+    clearTimeout(this.silenceTimer);
+    this.silenceTimer = setTimeout(() => {
+      const text = this.captured.trim();
+      this.#enterIdle();
+      if (text) this.on.command?.(text);
+    }, SILENCE_MS);
+  }
+
+  #onResult(event) {
+    let interim = '';
+    let final = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      if (result.isFinal) final += result[0].transcript;
+      else interim += result[0].transcript;
+    }
+    const heard = `${final} ${interim}`.trim();
+    if (!heard) return;
+
+    // While JARVIS is talking the mic mostly hears JARVIS. Only act on an
+    // explicit interruption.
+    if (this.suppressed) {
+      const lower = heard.toLowerCase();
+      const wake = (this.getSettings().wakeWord || 'jarvis').toLowerCase();
+      if (BARGE_IN.some((w) => lower.includes(w)) || lower.includes(wake)) {
+        this.cancelSpeech();
+        this.on.bargeIn?.();
+        if (lower.includes(wake)) this.#enterCapture(this.#afterWake(heard, wake));
+      }
+      return;
+    }
+
+    if (this.mode === 'idle') {
+      const wake = (this.getSettings().wakeWord || 'jarvis').toLowerCase();
+      const lower = heard.toLowerCase();
+      const at = lower.lastIndexOf(wake);
+      if (at === -1) {
+        this.on.hearing?.(heard, false);
+        return;
+      }
+      this.#enterCapture(this.#afterWake(heard, wake));
+      this.on.hearing?.(this.captured, true);
+      return;
+    }
+
+    if (this.mode === 'capturing') {
+      this.captured = final ? `${this.captured} ${final}`.trim() : this.captured;
+      this.on.hearing?.(`${this.captured} ${interim}`.trim(), true);
+      this.#armSilence();
+    }
+  }
+
+  #afterWake(heard, wake) {
+    const at = heard.toLowerCase().lastIndexOf(wake);
+    return heard.slice(at + wake.length).replace(/^[\s,.:;!?-]+/, '');
+  }
+
+  // --- speech synthesis ----------------------------------------------------
+
+  /** Feed streaming text; complete sentences are spoken as soon as they land. */
+  feed(delta) {
+    this.ttsBuffer += delta;
+    const cut = this.#lastSentenceBreak(this.ttsBuffer);
+    if (cut > 0) {
+      const chunk = this.ttsBuffer.slice(0, cut);
+      this.ttsBuffer = this.ttsBuffer.slice(cut);
+      this.#enqueue(chunk);
+    }
+  }
+
+  /** Speak whatever is left in the buffer. */
+  flush() {
+    const rest = this.ttsBuffer.trim();
+    this.ttsBuffer = '';
+    if (rest) this.#enqueue(rest);
+  }
+
+  /** Speak a one-off line (timers firing, errors, greetings). */
+  say(text) {
+    this.#enqueue(text);
+  }
+
+  cancelSpeech() {
+    this.ttsBuffer = '';
+    window.speechSynthesis?.cancel();
+    this.speaking = false;
+    this.suppressed = false;
+    this.speechEnvelope = 0;
+    this.on.speaking?.(false);
+  }
+
+  #lastSentenceBreak(text) {
+    // Break after . ! ? … or a newline, as long as something follows it.
+    const match = /[.!?…\n](?=\s|$)/g;
+    let last = -1;
+    let m;
+    while ((m = match.exec(text)) !== null) last = m.index;
+    return last === -1 ? -1 : last + 1;
+  }
+
+  #pickVoice() {
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices.length) return null;
+    const wanted = this.getSettings().voiceURI;
+    if (wanted) {
+      const exact = voices.find((v) => v.voiceURI === wanted);
+      if (exact) return exact;
+    }
+    for (const name of VOICE_PREFERENCES) {
+      const hit = voices.find((v) => v.name.includes(name));
+      if (hit) return hit;
+    }
+    return voices.find((v) => v.lang?.startsWith('en')) || voices[0];
+  }
+
+  #enqueue(text) {
+    const clean = text.replace(/[*_`#]/g, '').trim();
+    if (!clean || !window.speechSynthesis) return;
+    if (!this.getSettings().speak) return;
+
+    const utter = new SpeechSynthesisUtterance(clean);
+    const voice = this.#pickVoice();
+    if (voice) utter.voice = voice;
+    utter.rate = this.getSettings().rate ?? 1.05;
+    utter.pitch = this.getSettings().pitch ?? 0.9;
+
+    utter.onstart = () => {
+      this.speaking = true;
+      this.suppressed = true;
+      this.on.speaking?.(true);
+    };
+    // Drive a fake amplitude envelope off word boundaries so the orb moves
+    // with the speech — speechSynthesis output isn't routed through WebAudio.
+    utter.onboundary = () => {
+      this.speechEnvelope = 0.55 + Math.random() * 0.45;
+      setTimeout(() => {
+        this.speechEnvelope *= 0.5;
+      }, 90);
+    };
+    const finish = () => {
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) return;
+      this.speaking = false;
+      this.speechEnvelope = 0;
+      this.on.speaking?.(false);
+      // Give the mic a moment to stop hearing the tail of the sentence.
+      setTimeout(() => {
+        this.suppressed = false;
+      }, 400);
+    };
+    utter.onend = finish;
+    utter.onerror = finish;
+
+    window.speechSynthesis.speak(utter);
+  }
+}
+// --- end voice.js ---
+
+// --- orb.js ---
+/**
+ * The orb: a canvas visualizer that reacts to whatever JARVIS is doing.
+ *
+ * Structure, back to front — outer glow, three tilted rings, an orbiting
+ * particle belt, and a wobbling core whose silhouette is driven by the live
+ * audio level.
+ */
+const STATES = {
+  idle:      { hueShift: 0,   spin: 0.10, wobble: 0.035, ringAlpha: 0.30, pulse: 0.35 },
+  listening: { hueShift: -8,  spin: 0.28, wobble: 0.090, ringAlpha: 0.65, pulse: 0.90 },
+  thinking:  { hueShift: -46, spin: 0.95, wobble: 0.060, ringAlpha: 0.85, pulse: 0.55 },
+  speaking:  { hueShift: 34,  spin: 0.40, wobble: 0.120, ringAlpha: 0.75, pulse: 1.00 },
+  error:     { hueShift: 150, spin: 0.05, wobble: 0.020, ringAlpha: 0.40, pulse: 0.20 },
+};
+
+/** Harmonics for the core silhouette: [angular frequency, speed, weight]. */
+const HARMONICS = [
+  [2, 0.7, 1.0],
+  [3, -1.1, 0.6],
+  [5, 0.45, 0.35],
+  [7, -0.8, 0.22],
+];
+
+function hexToHsl(hex) {
+  const clean = hex.replace('#', '');
+  const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean;
+  const r = parseInt(full.slice(0, 2), 16) / 255;
+  const g = parseInt(full.slice(2, 4), 16) / 255;
+  const b = parseInt(full.slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l * 100];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return [h * 360, s * 100, l * 100];
+}
+
+class Orb {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.state = 'idle';
+    this.level = 0;
+    this.smoothLevel = 0;
+    this.accent = '#34e7e4';
+    this.hsl = hexToHsl(this.accent);
+    this.t = 0;
+    this.spinPhase = 0;
+    this.blend = { ...STATES.idle };
+    this.particles = Array.from({ length: 64 }, (_, i) => ({
+      angle: (i / 64) * Math.PI * 2,
+      radius: 0.78 + Math.random() * 0.5,
+      speed: 0.12 + Math.random() * 0.4,
+      size: 0.6 + Math.random() * 1.8,
+    }));
+    this.getLevel = () => 0;
+
+    this.#resize();
+    window.addEventListener('resize', () => this.#resize());
+  }
+
+  setAccent(hex) {
+    this.accent = hex;
+    this.hsl = hexToHsl(hex);
+  }
+
+  setState(state) {
+    if (STATES[state]) this.state = state;
+  }
+
+  /** Supply a function returning the live 0..1 audio level. */
+  bindLevel(fn) {
+    this.getLevel = fn;
+  }
+
+  start() {
+    const loop = () => {
+      this.#frame();
+      this.raf = requestAnimationFrame(loop);
+    };
+    loop();
+  }
+
+  stop() {
+    cancelAnimationFrame(this.raf);
+  }
+
+  #resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.w = rect.width;
+    this.h = rect.height;
+    // The outermost ring sits at 2.05x the core radius, so leave room for it
+    // and cap the size — a wall-filling orb reads as a background, not a face.
+    const fit = Math.min(rect.width, rect.height) / 5.2;
+    this.base = Math.max(50, Math.min(fit, 122));
+  }
+
+  #frame() {
+    const target = STATES[this.state] || STATES.idle;
+    // Ease between states so mode changes feel like a machine spinning up.
+    for (const key of Object.keys(target)) {
+      this.blend[key] += (target[key] - this.blend[key]) * 0.07;
+    }
+
+    const raw = this.getLevel();
+    this.smoothLevel += (raw - this.smoothLevel) * (raw > this.smoothLevel ? 0.35 : 0.08);
+    this.t += 0.016;
+    this.spinPhase += this.blend.spin * 0.016;
+
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.w, this.h);
+    ctx.save();
+    ctx.translate(this.w / 2, this.h / 2);
+    ctx.globalCompositeOperation = 'lighter';
+
+    const [h, s, l] = this.hsl;
+    const hue = (h + this.blend.hueShift + 360) % 360;
+    const breathe = 1 + Math.sin(this.t * 1.4) * 0.03 * this.blend.pulse;
+    const energy = this.smoothLevel * this.blend.pulse;
+    const R = this.base * breathe * (1 + energy * 0.22);
+
+    this.#glow(hue, s, R, energy);
+    this.#rings(hue, s, l, R);
+    this.#particles(hue, s, R, energy);
+    this.#core(hue, s, l, R, energy);
+
+    ctx.restore();
+  }
+
+  #glow(hue, s, R, energy) {
+    const ctx = this.ctx;
+    // Keep the falloff inside the canvas — a clipped gradient shows up as a
+    // hard-edged rectangle sitting behind the orb.
+    const outer = Math.min(R * (3.1 + energy), Math.min(this.w, this.h) * 0.5);
+    const g = ctx.createRadialGradient(0, 0, R * 0.2, 0, 0, outer);
+    g.addColorStop(0, `hsla(${hue}, ${s}%, 62%, ${0.30 + energy * 0.25})`);
+    g.addColorStop(0.35, `hsla(${hue}, ${s}%, 52%, 0.10)`);
+    g.addColorStop(1, `hsla(${hue}, ${s}%, 50%, 0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, outer, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  #rings(hue, s, l, R) {
+    const ctx = this.ctx;
+    const configs = [
+      { r: 1.42, tilt: 0.42, dir: 1, dash: [26, 12], width: 1.5 },
+      { r: 1.72, tilt: -0.68, dir: -1, dash: [8, 16], width: 1.0 },
+      { r: 1.98, tilt: 1.15, dir: 1, dash: [70, 46], width: 2.0 },
+    ];
+    for (const cfg of configs) {
+      ctx.save();
+      ctx.rotate(cfg.tilt + this.spinPhase * cfg.dir);
+      ctx.strokeStyle = `hsla(${hue}, ${s}%, ${Math.min(78, l + 18)}%, ${this.blend.ringAlpha})`;
+      ctx.lineWidth = cfg.width;
+      ctx.setLineDash(cfg.dash);
+      ctx.shadowBlur = 18;
+      ctx.shadowColor = `hsla(${hue}, ${s}%, 60%, 0.8)`;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, R * cfg.r, R * cfg.r * 0.32, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.setLineDash([]);
+    ctx.shadowBlur = 0;
+  }
+
+  #particles(hue, s, R, energy) {
+    const ctx = this.ctx;
+    for (const p of this.particles) {
+      p.angle += p.speed * 0.006 * (1 + energy * 2.5);
+      const wobble = Math.sin(this.t * p.speed * 3 + p.angle * 4) * 0.06;
+      const r = R * (p.radius + wobble + energy * 0.25);
+      const x = Math.cos(p.angle) * r;
+      const y = Math.sin(p.angle) * r * 0.55;
+      const alpha = 0.18 + energy * 0.5;
+      ctx.fillStyle = `hsla(${hue}, ${s}%, 78%, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(x, y, p.size * (1 + energy), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  #core(hue, s, l, R, energy) {
+    const ctx = this.ctx;
+    const amp = this.blend.wobble + energy * 0.16;
+    const steps = 150;
+
+    ctx.beginPath();
+    for (let i = 0; i <= steps; i++) {
+      const theta = (i / steps) * Math.PI * 2;
+      let offset = 0;
+      for (const [k, speed, weight] of HARMONICS) {
+        offset += Math.sin(k * theta + this.t * speed * 2) * weight;
+      }
+      const r = R * (1 + amp * offset);
+      const x = Math.cos(theta) * r;
+      const y = Math.sin(theta) * r;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+
+    const fill = ctx.createRadialGradient(0, -R * 0.3, R * 0.05, 0, 0, R * 1.2);
+    fill.addColorStop(0, `hsla(${hue}, ${Math.min(100, s + 10)}%, ${Math.min(92, l + 32)}%, 0.95)`);
+    fill.addColorStop(0.55, `hsla(${hue}, ${s}%, ${l}%, 0.55)`);
+    fill.addColorStop(1, `hsla(${(hue + 30) % 360}, ${s}%, ${Math.max(18, l - 22)}%, 0.15)`);
+    ctx.fillStyle = fill;
+    ctx.fill();
+
+    // A soft rim rather than a hard outline, so the core reads as a sphere.
+    ctx.strokeStyle = `hsla(${hue}, ${s}%, 90%, ${0.16 + energy * 0.35})`;
+    ctx.lineWidth = 1;
+    ctx.shadowBlur = 24;
+    ctx.shadowColor = `hsla(${hue}, ${s}%, 70%, 0.55)`;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // A tight inner highlight so the core reads as a sphere, not a disc.
+    ctx.beginPath();
+    ctx.arc(-R * 0.26, -R * 0.3, R * 0.22, 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${hue}, 60%, 96%, ${0.07 + energy * 0.14})`;
+    ctx.fill();
+  }
+}
+// --- end orb.js ---
+
+// --- app.js ---
+/**
+ * JARVIS — wiring.
+ *
+ * Owns the turn loop (user utterance -> streamed reply -> tool calls -> repeat),
+ * the HUD, and the state machine that tells the orb what mood to be in.
+ */
+
+const $ = (id) => document.getElementById(id);
+const MAX_TOOL_ROUNDS = 6;
+
+const el = {
+  hud: $('hud'), boot: $('boot'), bootBtn: $('boot-btn'), bootNote: $('boot-note'),
+  orb: $('orb'), orbLabel: $('orb-label'), heard: $('heard'), transcript: $('transcript'),
+  composer: $('composer'), input: $('composer-input'), micBtn: $('mic-btn'),
+  settingsBtn: $('settings-btn'), settings: $('settings'), settingsForm: $('settings-form'),
+  clockTime: $('clock-time'), clockDate: $('clock-date'),
+  statStatus: $('stat-status'), statModel: $('stat-model'), statLink: $('stat-link'), statVoice: $('stat-voice'),
+  timers: $('timers'), tasks: $('tasks'), facts: $('facts'),
+  taskCount: $('task-count'), factCount: $('fact-count'),
+  toast: $('toast'), wipeBtn: $('wipe-btn'),
+};
+
+let busy = false;
+let proxyMode = false;
+
+// --- presentation -----------------------------------------------------------
+
+const orb = new Orb(el.orb);
+
+function setState(state, label = state) {
+  orb.setState(state);
+  el.orbLabel.textContent = label;
+  el.statStatus.textContent = label;
+}
+
+function setAccent(hex) {
+  document.documentElement.style.setProperty('--accent', hex);
+  orb.setAccent(hex);
+}
+
+let toastTimer;
+function toast(text) {
+  el.toast.textContent = text;
+  el.toast.classList.add('is-up');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.toast.classList.remove('is-up'), 3200);
+}
+
+function bubble(role, text = '') {
+  const div = document.createElement('div');
+  div.className = `msg msg--${role}`;
+  div.textContent = text;
+  el.transcript.append(div);
+  el.transcript.scrollTop = el.transcript.scrollHeight;
+  return div;
+}
+
+function renderLists() {
+  const tasks = memory.tasks;
+  el.taskCount.textContent = String(tasks.filter((t) => !t.done).length);
+  el.tasks.innerHTML = '';
+  if (!tasks.length) {
+    el.tasks.innerHTML = '<li class="list__empty">nothing queued</li>';
+  } else {
+    for (const t of tasks.slice(-30).reverse()) {
+      const li = document.createElement('li');
+      li.textContent = t.text;
+      if (t.done) li.classList.add('is-done');
+      el.tasks.append(li);
+    }
+  }
+
+  const facts = memory.facts;
+  el.factCount.textContent = String(facts.length);
+  el.facts.innerHTML = '';
+  if (!facts.length) {
+    el.facts.innerHTML = '<li class="list__empty">nothing stored yet</li>';
+  } else {
+    for (const f of facts.slice(-40).reverse()) {
+      const li = document.createElement('li');
+      li.textContent = f.text;
+      el.facts.append(li);
+    }
+  }
+}
+
+function renderTimers(list) {
+  el.timers.innerHTML = '';
+  if (!list.length) {
+    el.timers.innerHTML = '<li class="list__empty">none running</li>';
+    return;
+  }
+  for (const t of list) {
+    const li = document.createElement('li');
+    li.textContent = `${t.label} — ${fmtDuration((t.endsAt - Date.now()) / 1000)}`;
+    el.timers.append(li);
+  }
+}
+
+function tickClock() {
+  const now = new Date();
+  el.clockTime.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  el.clockDate.textContent = now.toLocaleDateString([], {
+    weekday: 'long', month: 'short', day: 'numeric',
+  });
+  renderTimers(tools.activeTimers());
+}
+
+// --- brain, voice, tools ----------------------------------------------------
+
+const brain = new Brain({ proxy: false, getSettings: () => memory.settings });
+
+const voice = new Voice({
+  getSettings: () => memory.settings,
+  on: {
+    mode(mode) {
+      el.micBtn.classList.toggle('is-hot', mode === 'capturing');
+      if (busy) return;
+      if (mode === 'capturing') setState('listening', 'listening');
+      else if (mode === 'idle') setState('idle', 'standby');
+      else setState('idle', 'muted');
+    },
+    hearing(text, live) {
+      el.heard.textContent = live ? text : '';
+      el.heard.classList.toggle('is-live', Boolean(live && text));
+    },
+    speaking(on) {
+      if (on) setState('speaking', 'speaking');
+      else if (!busy) setState('idle', 'standby');
+      else setState('thinking', 'thinking');
+    },
+    bargeIn() {
+      brain.abort();
+      busy = false;
+      setState('idle', 'standby');
+      toast('Interrupted.');
+    },
+    command(text) {
+      el.heard.textContent = '';
+      el.heard.classList.remove('is-live');
+      send(text);
+    },
+    error(message) {
+      toast(message);
+      el.statVoice.textContent = 'unavailable';
+    },
+  },
+});
+
+const tools = createTools({
+  say: (text) => voice.say(text),
+  notify: (text) => toast(text),
+  setAccent,
+  onTimers: renderTimers,
+});
+
+// --- the prompt -------------------------------------------------------------
+
+function buildSystemPrompt() {
+  const s = memory.settings;
+  const now = new Date();
+  const lines = [
+    'You are JARVIS, a voice assistant running in the user\'s browser.',
+    '',
+    'Voice comes first. Your replies are read aloud by a speech synthesizer, so:',
+    '- Keep answers to one to three sentences unless asked for more.',
+    '- Write plain spoken prose. No markdown, no bullet lists, no emoji, no code blocks, no URLs read aloud.',
+    '- Expand numbers and units the way a person would say them.',
+    '- Never narrate what you are about to do; just do it and report the result.',
+    '',
+    'Personality: calm, precise, quietly witty. Loyal without being fawning. You do not',
+    'apologise repeatedly, pad answers with filler, or ask permission for small things.',
+    '',
+    'Tools: call them rather than guessing. Use get_datetime for anything time-dependent.',
+    'Call remember on your own initiative whenever the user reveals something durable about',
+    'themselves — preferences, names, plans, how they like things done. Do not announce that',
+    'you are remembering unless it matters.',
+    '',
+    `Current local time: ${now.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}).`,
+  ];
+
+  if (s.name) lines.push(`The user's name is ${s.name}.`);
+
+  const facts = memory.facts;
+  if (facts.length) {
+    lines.push('', 'What you already know about the user:');
+    for (const f of facts.slice(-40)) lines.push(`- ${f.text}`);
+  }
+
+  const open = memory.tasks.filter((t) => !t.done);
+  if (open.length) {
+    lines.push('', 'Open tasks on their board:');
+    for (const t of open.slice(-20)) lines.push(`- ${t.text}`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Drop leading messages until the history starts on a clean user turn, so a
+ * trimmed transcript never opens with an orphaned tool_result.
+ */
+function sanitize(messages) {
+  let out = messages.slice(-40);
+  while (out.length) {
+    const first = out[0];
+    const orphanResult =
+      Array.isArray(first.content) && first.content.some((b) => b.type === 'tool_result');
+    if (first.role === 'user' && !orphanResult) break;
+    out = out.slice(1);
+  }
+  return out;
+}
+
+// --- the turn loop ----------------------------------------------------------
+
+async function send(text) {
+  const clean = String(text).trim();
+  if (!clean || busy) return;
+
+  busy = true;
+  bubble('user', clean);
+  setState('thinking', 'thinking');
+
+  const messages = sanitize([...memory.history, { role: 'user', content: clean }]);
+  const toolDefs = tools.definitions;
+
+  try {
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      let replyEl = null;
+
+      const result = await brain.stream(
+        { system: buildSystemPrompt(), messages, tools: toolDefs },
+        {
+          text(delta) {
+            if (!replyEl) replyEl = bubble('jarvis');
+            replyEl.textContent += delta;
+            el.transcript.scrollTop = el.transcript.scrollHeight;
+            voice.feed(delta);
+          },
+        },
+      );
+
+      if (!result.content.length) {
+        bubble('error', 'Empty response from the model.');
+        break;
+      }
+
+      messages.push({ role: 'assistant', content: result.content });
+
+      if (result.stopReason !== 'tool_use') {
+        voice.flush();
+        break;
+      }
+
+      // Run every tool_use block in this turn, then hand all results back at once.
+      const calls = result.content.filter((b) => b.type === 'tool_use');
+      const results = [];
+      for (const call of calls) {
+        bubble('tool', `· ${call.name}`);
+        const output = await tools.run(call.name, call.input);
+        results.push({ type: 'tool_result', tool_use_id: call.id, content: output });
+      }
+      messages.push({ role: 'user', content: results });
+      renderLists();
+
+      if (round === MAX_TOOL_ROUNDS - 1) {
+        bubble('error', 'Stopped after too many tool rounds.');
+        voice.flush();
+      }
+    }
+
+    memory.replaceHistory(sanitize(messages));
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      // Barge-in already reported it.
+    } else {
+      bubble('error', err.message);
+      voice.say('Something went wrong.');
+      setState('error', 'error');
+      setTimeout(() => setState('idle', 'standby'), 2500);
+    }
+  } finally {
+    busy = false;
+    renderLists();
+    if (!voice.speaking) setState('idle', 'standby');
+  }
+}
+
+// --- settings ---------------------------------------------------------------
+
+function loadVoiceOptions() {
+  const select = $('set-voice');
+  const voices = window.speechSynthesis?.getVoices() || [];
+  const current = memory.settings.voiceURI;
+  select.innerHTML = '<option value="">Automatic</option>';
+  for (const v of voices) {
+    const opt = document.createElement('option');
+    opt.value = v.voiceURI;
+    opt.textContent = `${v.name} (${v.lang})`;
+    if (v.voiceURI === current) opt.selected = true;
+    select.append(opt);
+  }
+}
+
+function wireSettings() {
+  const s = memory.settings;
+  $('set-key').value = s.apiKey;
+  $('set-model').value = s.model;
+  $('set-effort').value = s.effort;
+  $('set-wake').value = s.wakeWord;
+  $('set-name').value = s.name;
+  $('set-speak').checked = s.speak;
+  $('set-always').checked = s.alwaysListen;
+  $('set-rate').value = s.rate;
+  $('rate-out').textContent = `${Number(s.rate).toFixed(2)}x`;
+  $('set-accent').value = s.accent;
+
+  if (proxyMode) {
+    $('field-key').style.display = 'none';
+  }
+
+  const bind = (id, key, read = (e) => e.value) => {
+    $(id).addEventListener('change', (ev) => {
+      memory.setSetting(key, read(ev.target));
+      applySettings();
+    });
+  };
+
+  bind('set-key', 'apiKey');
+  bind('set-model', 'model');
+  bind('set-effort', 'effort');
+  bind('set-wake', 'wakeWord');
+  bind('set-name', 'name');
+  bind('set-voice', 'voiceURI');
+  bind('set-speak', 'speak', (e) => e.checked);
+  bind('set-always', 'alwaysListen', (e) => e.checked);
+  bind('set-accent', 'accent');
+
+  $('set-rate').addEventListener('input', (ev) => {
+    const rate = Number(ev.target.value);
+    memory.setSetting('rate', rate);
+    $('rate-out').textContent = `${rate.toFixed(2)}x`;
+  });
+
+  el.settingsBtn.addEventListener('click', () => {
+    loadVoiceOptions();
+    el.settings.showModal();
+  });
+
+  el.wipeBtn.addEventListener('click', () => {
+    if (!confirm('Erase all stored facts, tasks and conversation history?')) return;
+    memory.wipe();
+    el.transcript.innerHTML = '';
+    renderLists();
+    toast('Memory erased.');
+  });
+}
+
+function applySettings() {
+  const s = memory.settings;
+  setAccent(s.accent);
+  el.statModel.textContent = s.model.replace('claude-', '');
+  el.statVoice.textContent = Voice.supported ? (s.speak ? 'on' : 'muted') : 'unavailable';
+  if (s.alwaysListen && Voice.supported) voice.start();
+  else voice.stop();
+}
+
+// --- boot -------------------------------------------------------------------
+
+async function boot() {
+  el.boot.classList.add('is-gone');
+  el.hud.classList.add('is-live');
+
+  await voice.enableMic();
+  orb.bindLevel(() => voice.level());
+  orb.start();
+
+  applySettings();
+  renderLists();
+  setState('idle', 'standby');
+
+  // Replay whatever was said last session so the screen isn't blank.
+  for (const message of memory.history.slice(-8)) {
+    if (typeof message.content === 'string') {
+      bubble(message.role === 'user' ? 'user' : 'jarvis', message.content);
+    } else if (Array.isArray(message.content)) {
+      const text = message.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+      if (text) bubble(message.role === 'user' ? 'user' : 'jarvis', text);
+    }
+  }
+
+  const greeting = memory.settings.name
+    ? `Good to see you, ${memory.settings.name}. Standing by.`
+    : 'Systems online. Standing by.';
+  bubble('jarvis', greeting);
+  voice.say(greeting);
+}
+
+async function init() {
+  // Does the server hold an API key, or must the browser supply one? Opened
+  // straight off disk there is no server to ask, and fetch on a file:// URL
+  // logs an error even when it is caught — so don't ask.
+  if (window.location.protocol === 'file:') {
+    proxyMode = false;
+  } else {
+    try {
+      const config = await fetch('/api/config').then((r) => r.json());
+      proxyMode = Boolean(config.proxy);
+    } catch {
+      proxyMode = false;
+    }
+  }
+  brain.proxy = proxyMode;
+  el.statLink.textContent = proxyMode ? 'server proxy' : 'direct';
+
+  setAccent(memory.settings.accent);
+  wireSettings();
+  renderLists();
+  tickClock();
+  setInterval(tickClock, 1000);
+
+  if (!Voice.supported) {
+    el.bootNote.textContent =
+      'This browser has no speech recognition — Chrome or Edge handle the wake word. ' +
+      'You can still type, and replies are still spoken aloud.';
+  }
+  if (!proxyMode && !memory.settings.apiKey) {
+    el.bootNote.textContent =
+      'No API key on the server. Open settings after initializing and paste an Anthropic ' +
+      'API key — it stays in this browser.';
+  }
+
+  // speechSynthesis populates its voice list asynchronously.
+  window.speechSynthesis?.addEventListener?.('voiceschanged', loadVoiceOptions);
+
+  el.bootBtn.addEventListener('click', boot, { once: true });
+
+  el.composer.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const text = el.input.value;
+    el.input.value = '';
+    send(text);
+  });
+
+  el.micBtn.addEventListener('click', () => {
+    voice.cancelSpeech();
+    voice.listenNow();
+  });
+
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      voice.cancelSpeech();
+      brain.abort();
+      return;
+    }
+    // Space anywhere outside a text field starts a capture.
+    if (ev.code === 'Space' && !ev.repeat && !['INPUT', 'TEXTAREA'].includes(ev.target.tagName)) {
+      ev.preventDefault();
+      voice.cancelSpeech();
+      voice.listenNow();
+    }
+  });
+
+  memory.subscribe(() => {
+    /* lists re-render on demand; this keeps storage writes observable */
+  });
+}
+
+init();
+// --- end app.js ---
+
+}());
+</script>
+</body>
+</html>
