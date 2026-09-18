@@ -41,17 +41,24 @@ html, body {
 }
 
 body::before {
-  /* Slow ambient wash behind everything. */
+  /* Slow drifting aurora behind everything. */
   content: "";
   position: fixed;
-  inset: -20%;
+  inset: -30%;
   background:
-    radial-gradient(45% 40% at 50% 45%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%),
-    radial-gradient(60% 50% at 80% 90%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 70%),
+    radial-gradient(40% 35% at 30% 35%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 70%),
+    radial-gradient(45% 40% at 75% 30%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%),
+    radial-gradient(60% 50% at 60% 95%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%),
     var(--bg-2);
-  filter: blur(40px);
+  filter: blur(48px) saturate(1.1);
   z-index: -2;
   transition: background 600ms ease;
+  animation: drift 26s ease-in-out infinite alternate;
+}
+@keyframes drift {
+  0%   { transform: translate3d(-2%, -1%, 0) scale(1.02); }
+  50%  { transform: translate3d(2%, 1.5%, 0) scale(1.06); }
+  100% { transform: translate3d(-1%, 2%, 0) scale(1.02); }
 }
 
 .grain {
@@ -59,10 +66,14 @@ body::before {
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  opacity: 0.35;
+  opacity: 0.5;
   background-image:
-    repeating-linear-gradient(0deg, rgba(255,255,255,0.025) 0 1px, transparent 1px 3px);
-  mix-blend-mode: overlay;
+    linear-gradient(color-mix(in srgb, var(--accent) 6%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 6%, transparent) 1px, transparent 1px),
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 3px);
+  background-size: 46px 46px, 46px 46px, auto;
+  mask-image: radial-gradient(120% 90% at 50% 30%, #000 40%, transparent 78%);
+  -webkit-mask-image: radial-gradient(120% 90% at 50% 30%, #000 40%, transparent 78%);
 }
 
 /* --- layout -------------------------------------------------------------- */
@@ -198,6 +209,16 @@ body::before {
   text-transform: uppercase;
   color: color-mix(in srgb, var(--accent) 85%, white);
   text-shadow: 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+
+/* --- voice spectrum ------------------------------------------------------ */
+
+.wave {
+  width: min(360px, 70%);
+  height: 46px;
+  margin: 2px auto 0;
+  display: block;
 }
 
 .heard {
@@ -537,6 +558,8 @@ body.is-serious .clock__time { color: #fff; }
     </div>
     <div class="orb-label" id="orb-label">standby</div>
 
+    <canvas id="wave" class="wave" aria-hidden="true"></canvas>
+
     <p class="heard" id="heard"></p>
 
     <div class="transcript" id="transcript" aria-live="polite"></div>
@@ -637,6 +660,15 @@ body.is-serious .clock__time { color: #fff; }
     </label>
 
     <label class="field">
+      <span>Speech engine <small id="engine-note"></small></span>
+      <select id="set-engine">
+        <option value="auto">Automatic</option>
+        <option value="web-speech">Browser — Chrome/Edge, most accurate</option>
+        <option value="vosk">On-device — any browser, offline (downloads a model)</option>
+      </select>
+    </label>
+
+    <label class="field">
       <span>Voice</span>
       <select id="set-voice"><option value="">Automatic</option></select>
     </label>
@@ -687,6 +719,8 @@ const DEFAULTS = {
     webSearch: false,
     name: '',
     clapToDictate: true,     // double-clap starts a capture
+    speechEngine: 'auto',    // auto | web-speech | vosk (on-device)
+    voskModelUrl: '',        // override the default on-device model
   },
   // Set while serious mode is on, so a reload can restore the prior model/effort
   // when it's switched back off.
@@ -1691,6 +1725,223 @@ class ClapDetector {
 }
 // --- end clap.js ---
 
+// --- recognizer.js ---
+/**
+ * Speech recognizers — the source of transcripts, behind one interface so the
+ * rest of JARVIS doesn't care how the words arrived.
+ *
+ * Two engines:
+ *   - WebSpeechRecognizer: the browser's built-in SpeechRecognition. Zero setup,
+ *     accurate, but Chrome/Edge only and it phones home to Google.
+ *   - VoskRecognizer: captures the raw microphone (getUserMedia, like a game's
+ *     voice chat) and transcribes it on-device with a WASM model. Works in any
+ *     browser and fully offline once the model is cached — no cloud, no key.
+ *
+ * Both emit the same events:
+ *   on.transcript(finalText, interimText)  — words heard
+ *   on.status(state)                        — 'loading' | 'listening' | 'off'
+ *   on.error(message)
+ */
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+/** A sensible default on-device model (small English). Overridable in settings. */
+const DEFAULT_VOSK_MODEL =
+  'https://ccoreilly.github.io/vosk-browser/models/vosk-model-small-en-us-0.15.tar.gz';
+
+const VOSK_CDN = 'https://cdn.jsdelivr.net/npm/vosk-browser@0.0.8/dist/vosk.js';
+
+function webSpeechSupported() {
+  return Boolean(SpeechRecognition);
+}
+
+/** Load the Vosk UMD bundle once and hand back the global it defines. */
+let voskLoading = null;
+function loadVosk() {
+  if (window.Vosk) return Promise.resolve(window.Vosk);
+  if (voskLoading) return voskLoading;
+  voskLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = VOSK_CDN;
+    s.async = true;
+    s.onload = () => (window.Vosk ? resolve(window.Vosk) : reject(new Error('Vosk failed to initialise')));
+    s.onerror = () => reject(new Error('Could not load the on-device speech engine.'));
+    document.head.append(s);
+  });
+  return voskLoading;
+}
+
+/** The browser's own recognizer. */
+class WebSpeechRecognizer {
+  constructor({ getSettings, on }) {
+    this.getSettings = getSettings;
+    this.on = on;
+    this.rec = null;
+    this.active = false;
+    this.restartDelay = 250;
+  }
+
+  get name() {
+    return 'web-speech';
+  }
+
+  start() {
+    if (!SpeechRecognition) {
+      this.on.error?.('This browser has no built-in speech recognition.');
+      return false;
+    }
+    this.active = true;
+    this.#spinUp();
+    return true;
+  }
+
+  stop() {
+    this.active = false;
+    try {
+      this.rec?.stop();
+    } catch {
+      // Already stopped.
+    }
+    this.on.status?.('off');
+  }
+
+  #spinUp() {
+    if (!this.active || this.rec) return;
+    const rec = new SpeechRecognition();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = navigator.language || 'en-US';
+
+    rec.onresult = (event) => {
+      let interim = '';
+      let final = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const r = event.results[i];
+        if (r.isFinal) final += r[0].transcript;
+        else interim += r[0].transcript;
+      }
+      this.on.transcript?.(final, interim);
+    };
+    rec.onerror = (event) => {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        this.active = false;
+        this.on.error?.('Microphone permission denied — speech recognition is off.');
+      } else if (event.error === 'audio-capture') {
+        this.active = false;
+        this.on.error?.('No microphone found.');
+      }
+    };
+    rec.onend = () => {
+      this.rec = null;
+      if (!this.active) {
+        this.on.status?.('off');
+        return;
+      }
+      setTimeout(() => this.#spinUp(), this.restartDelay);
+    };
+
+    try {
+      rec.start();
+      this.rec = rec;
+      this.on.status?.('listening');
+    } catch {
+      setTimeout(() => this.#spinUp(), 500);
+    }
+  }
+}
+
+/**
+ * On-device recognizer. Captures the shared mic stream, feeds raw PCM to a Vosk
+ * WASM model, and streams partial + final transcripts — no cloud, works in any
+ * browser.
+ */
+class VoskRecognizer {
+  constructor({ getSettings, getStream, getAudioContext, on }) {
+    this.getSettings = getSettings;
+    this.getStream = getStream;
+    this.getAudioContext = getAudioContext;
+    this.on = on;
+    this.active = false;
+    this.model = null;
+    this.rec = null;
+    this.node = null;
+    this.source = null;
+    this.sink = null;
+  }
+
+  get name() {
+    return 'vosk';
+  }
+
+  async start() {
+    if (this.active) return true;
+    this.active = true;
+    this.on.status?.('loading');
+    try {
+      const Vosk = await loadVosk();
+      if (!this.active) return false; // stopped while loading
+      const modelUrl = this.getSettings().voskModelUrl || DEFAULT_VOSK_MODEL;
+      this.model = await Vosk.createModel(modelUrl);
+      if (!this.active) return false;
+
+      const ctx = this.getAudioContext();
+      this.rec = new this.model.KaldiRecognizer(ctx.sampleRate);
+      this.rec.on('result', (m) => this.on.transcript?.(m.result?.text || '', ''));
+      this.rec.on('partialresult', (m) => this.on.transcript?.('', m.result?.partial || ''));
+
+      // Raw-audio path: mic → script processor → recognizer. A zero-gain sink
+      // keeps the graph pulling audio without echoing the mic to the speakers.
+      this.source = ctx.createMediaStreamSource(this.getStream());
+      this.node = ctx.createScriptProcessor(4096, 1, 1);
+      this.node.onaudioprocess = (e) => {
+        if (this.active && this.rec) {
+          try {
+            this.rec.acceptWaveform(e.inputBuffer);
+          } catch {
+            // Recognizer torn down mid-frame; ignore.
+          }
+        }
+      };
+      this.sink = ctx.createGain();
+      this.sink.gain.value = 0;
+      this.source.connect(this.node);
+      this.node.connect(this.sink);
+      this.sink.connect(ctx.destination);
+
+      this.on.status?.('listening');
+      return true;
+    } catch (err) {
+      this.active = false;
+      this.on.error?.(err.message || 'On-device speech engine failed to start.');
+      return false;
+    }
+  }
+
+  stop() {
+    this.active = false;
+    try {
+      this.node?.disconnect();
+      this.source?.disconnect();
+      this.sink?.disconnect();
+      this.rec?.remove?.();
+    } catch {
+      // Best effort.
+    }
+    this.node = this.source = this.sink = this.rec = null;
+    this.on.status?.('off');
+  }
+}
+
+/**
+ * Pick an engine. 'auto' prefers the browser's recognizer when present (it's
+ * the most accurate and needs no download), else the on-device one.
+ */
+function chooseEngine(preference) {
+  if (preference === 'web-speech') return webSpeechSupported() ? 'web-speech' : 'vosk';
+  if (preference === 'vosk') return 'vosk';
+  return webSpeechSupported() ? 'web-speech' : 'vosk';
+}
+// --- end recognizer.js ---
+
 // --- voice.js ---
 /**
  * Ears and mouth.
@@ -1701,9 +1952,12 @@ class ClapDetector {
  * while the model is still writing.
  *
  * Also owns the mic analyser, which gives the orb something real to react to.
+ *
+ * Transcription itself is delegated to a recognizer engine (recognizer.js) —
+ * the browser's built-in one, or an on-device WASM recognizer fed the raw mic
+ * so dictation works in any browser. This class turns whatever they hear into
+ * wake-word detection, capture and commit.
  */
-
-const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 /** Words that interrupt JARVIS mid-sentence. */
 const BARGE_IN = ['stop', 'shut up', 'quiet', 'cancel', 'nevermind', 'never mind'];
@@ -1717,15 +1971,10 @@ const VOICE_PREFERENCES = [
 const SILENCE_MS = 1200;
 
 class Voice {
-  static get supported() {
-    return Boolean(SpeechRecognition);
-  }
-
   constructor({ getSettings, on = {} }) {
     this.getSettings = getSettings;
     this.on = on;
     this.mode = 'off';          // off | idle | capturing
-    this.recognition = null;
     this.wantsRecognition = false;
     this.suppressed = false;    // true while JARVIS is talking (echo guard)
     this.captured = '';
@@ -1734,8 +1983,11 @@ class Voice {
     this.ttsBuffer = '';
     this.analyser = null;
     this.micData = null;
+    this.micStream = null;
     this.speechEnvelope = 0;
-    this.restartDelay = 250;
+
+    this.recognizer = null;
+    this.engineName = null;
 
     // Clap detection runs off a fast time-domain read of the mic, fed into a
     // tested state machine (clap.js).
@@ -1748,6 +2000,15 @@ class Voice {
     });
   }
 
+  /** Any engine can transcribe, so recognition is available unless nothing works. */
+  static get supported() {
+    return true;
+  }
+
+  static get webSpeechSupported() {
+    return webSpeechSupported();
+  }
+
   // --- microphone ----------------------------------------------------------
 
   /** Ask for the mic and wire up an analyser. Safe to call more than once. */
@@ -1755,6 +2016,7 @@ class Voice {
     if (this.analyser) return true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.micStream = stream;
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
@@ -1809,6 +2071,32 @@ class Voice {
     return peak;
   }
 
+  /**
+   * The current frequency spectrum as bytes (0..255), for the waveform display.
+   * While JARVIS is speaking the mic mostly hears itself, so synthesize a lively
+   * spectrum from the speech envelope instead so the bars still dance.
+   */
+  spectrum(out) {
+    const n = out.length;
+    if (this.speaking) {
+      const e = this.speechEnvelope;
+      for (let i = 0; i < n; i++) {
+        const shape = Math.sin((i / n) * Math.PI); // fuller in the middle
+        out[i] = Math.min(255, e * 255 * shape * (0.6 + Math.random() * 0.7));
+      }
+      return out;
+    }
+    if (!this.analyser) {
+      out.fill(0);
+      return out;
+    }
+    this.analyser.getByteFrequencyData(this.micData);
+    // Resample the analyser bins down to however many bars we're drawing.
+    const step = this.micData.length / n;
+    for (let i = 0; i < n; i++) out[i] = this.micData[Math.floor(i * step)];
+    return out;
+  }
+
   /** Current input loudness, 0..1. Falls back to the speech envelope while talking. */
   level() {
     if (this.speaking) return this.speechEnvelope;
@@ -1822,25 +2110,61 @@ class Voice {
 
   // --- recognition ---------------------------------------------------------
 
+  /** Build the recognizer for whichever engine settings ask for. */
+  #buildRecognizer() {
+    const want = chooseEngine(this.getSettings().speechEngine || 'auto');
+    if (this.recognizer && this.engineName === want) return this.recognizer;
+
+    this.recognizer?.stop();
+    this.engineName = want;
+
+    const shared = {
+      getSettings: this.getSettings,
+      on: {
+        transcript: (final, interim) => this.#onTranscript(final, interim),
+        status: (state) => {
+          if (state === 'loading') this.on.engine?.('loading', want);
+          else if (state === 'listening') {
+            this.on.engine?.('listening', want);
+            if (this.mode === 'off') this.#enterIdle();
+          } else if (state === 'off') {
+            this.on.mode?.('off');
+          }
+        },
+        error: (msg) => this.on.error?.(msg),
+      },
+    };
+
+    this.recognizer = want === 'vosk'
+      ? new VoskRecognizer({
+          ...shared,
+          getStream: () => this.micStream,
+          getAudioContext: () => this.audioContext,
+        })
+      : new WebSpeechRecognizer(shared);
+    return this.recognizer;
+  }
+
   start() {
-    if (!SpeechRecognition) {
-      this.on.error?.('This browser has no speech recognition. Use the text box instead.');
-      return false;
-    }
     this.wantsRecognition = true;
-    this.#spinUp();
+    this.#buildRecognizer().start();
     return true;
   }
 
   stop() {
     this.wantsRecognition = false;
     this.mode = 'off';
-    try {
-      this.recognition?.stop();
-    } catch {
-      // Already stopped.
-    }
+    this.recognizer?.stop();
     this.on.mode?.('off');
+  }
+
+  /** Switch engines at runtime (settings change). */
+  reloadEngine() {
+    if (!this.wantsRecognition) return;
+    this.recognizer?.stop();
+    this.recognizer = null;
+    this.engineName = null;
+    this.#buildRecognizer().start();
   }
 
   /** Skip the wake word and start capturing immediately (button / spacebar). */
@@ -1848,44 +2172,6 @@ class Voice {
     if (!this.wantsRecognition) this.start();
     this.cancelSpeech();
     this.#enterCapture('');
-  }
-
-  #spinUp() {
-    if (!this.wantsRecognition || this.recognition) return;
-    const rec = new SpeechRecognition();
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.lang = navigator.language || 'en-US';
-
-    rec.onresult = (event) => this.#onResult(event);
-    rec.onerror = (event) => {
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        this.wantsRecognition = false;
-        this.on.error?.('Microphone permission denied — speech recognition is off.');
-      } else if (event.error === 'audio-capture') {
-        this.wantsRecognition = false;
-        this.on.error?.('No microphone found.');
-      }
-      // 'no-speech' and 'network' are routine; onend handles the restart.
-    };
-    rec.onend = () => {
-      this.recognition = null;
-      if (!this.wantsRecognition) {
-        this.on.mode?.('off');
-        return;
-      }
-      // Chrome ends the session every so often; bring it straight back.
-      setTimeout(() => this.#spinUp(), this.restartDelay);
-    };
-
-    try {
-      rec.start();
-      this.recognition = rec;
-      if (this.mode === 'off') this.#enterIdle();
-    } catch {
-      // start() throws if a session is somehow still alive; the retry covers it.
-      setTimeout(() => this.#spinUp(), 500);
-    }
   }
 
   #enterIdle() {
@@ -1912,14 +2198,8 @@ class Voice {
     }, SILENCE_MS);
   }
 
-  #onResult(event) {
-    let interim = '';
-    let final = '';
-    for (let i = event.resultIndex; i < event.results.length; i++) {
-      const result = event.results[i];
-      if (result.isFinal) final += result[0].transcript;
-      else interim += result[0].transcript;
-    }
+  /** Normalized transcript from any engine: freshly-final and interim text. */
+  #onTranscript(final, interim) {
     const heard = `${final} ${interim}`.trim();
     if (!heard) return;
 
@@ -2299,6 +2579,119 @@ class Orb {
 }
 // --- end orb.js ---
 
+// --- wave.js ---
+/**
+ * Voice-chat-style spectrum bars. A symmetric row of bars driven by the live
+ * microphone spectrum (or JARVIS's speech envelope while it talks) — the raw
+ * audio made visible, the way a game's voice-chat UI shows you're transmitting.
+ */
+class Wave {
+  constructor(canvas, { bars = 48 } = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.count = bars;
+    this.data = new Uint8Array(bars);
+    this.smooth = new Float32Array(bars);
+    this.accent = '#34e7e4';
+    this.rgb = [52, 231, 228];
+    this.gain = 0;          // 0..1 overall visibility, eased toward target
+    this.target = 0;
+    this.getSpectrum = () => this.data;
+    this.#resize();
+    window.addEventListener('resize', () => this.#resize());
+  }
+
+  setAccent(hex) {
+    this.accent = hex;
+    this.rgb = Wave.#hexToRgb(hex);
+  }
+
+  static #hexToRgb(hex) {
+    const c = hex.replace('#', '');
+    const full = c.length === 3 ? c.split('').map((x) => x + x).join('') : c;
+    return [
+      parseInt(full.slice(0, 2), 16),
+      parseInt(full.slice(2, 4), 16),
+      parseInt(full.slice(4, 6), 16),
+    ];
+  }
+
+  bind(fn) {
+    this.getSpectrum = fn;
+  }
+
+  /** Fade the whole strip in (active) or down to a faint idle shimmer. */
+  setActive(active) {
+    this.target = active ? 1 : 0.12;
+  }
+
+  start() {
+    const loop = () => {
+      this.#frame();
+      this.raf = requestAnimationFrame(loop);
+    };
+    loop();
+  }
+
+  stop() {
+    cancelAnimationFrame(this.raf);
+  }
+
+  #resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.w = rect.width;
+    this.h = rect.height;
+  }
+
+  #frame() {
+    this.gain += (this.target - this.gain) * 0.08;
+    this.getSpectrum(this.data);
+
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.w, this.h);
+
+    const n = this.count;
+    const mid = this.h / 2;
+    const gap = 2;
+    const bw = Math.max(1.5, this.w / n - gap);
+
+    for (let i = 0; i < n; i++) {
+      const v = this.data[i] / 255;
+      // Ease each bar so it falls smoothly rather than flickering.
+      this.smooth[i] += (v - this.smooth[i]) * (v > this.smooth[i] ? 0.5 : 0.12);
+      const idle = 0.04 + 0.03 * Math.sin(Date.now() * 0.004 + i * 0.5);
+      const amp = Math.max(idle, this.smooth[i]) * this.gain;
+      const bh = Math.max(2, amp * (this.h - 4));
+      const x = i * (bw + gap);
+      const y = mid - bh / 2;
+
+      const alpha = 0.22 + amp * 0.78;
+      const [r, g, b] = this.rgb;
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      ctx.shadowBlur = amp * 12;
+      ctx.shadowColor = `rgba(${r}, ${g}, ${b}, ${amp * 0.7})`;
+      this.#bar(ctx, x, y, bw, bh);
+    }
+  }
+
+  #bar(ctx, x, y, w, h) {
+    const r = Math.min(w / 2, 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+// --- end wave.js ---
+
 // --- app.js ---
 /**
  * JARVIS — wiring.
@@ -2312,7 +2705,7 @@ const MAX_TOOL_ROUNDS = 6;
 
 const el = {
   hud: $('hud'), boot: $('boot'), bootBtn: $('boot-btn'), bootNote: $('boot-note'),
-  orb: $('orb'), orbLabel: $('orb-label'), heard: $('heard'), transcript: $('transcript'),
+  orb: $('orb'), orbLabel: $('orb-label'), heard: $('heard'), transcript: $('transcript'), wave: $('wave'),
   composer: $('composer'), input: $('composer-input'), micBtn: $('mic-btn'),
   settingsBtn: $('settings-btn'), settings: $('settings'), settingsForm: $('settings-form'),
   clockTime: $('clock-time'), clockDate: $('clock-date'),
@@ -2329,9 +2722,12 @@ let serious = false;
 // --- presentation -----------------------------------------------------------
 
 const orb = new Orb(el.orb);
+const wave = new Wave(el.wave);
 
 function setState(state, label = state) {
   orb.setState(state);
+  // The spectrum bars light up while listening or speaking, idle otherwise.
+  wave.setActive(state === 'listening' || state === 'speaking');
   el.orbLabel.textContent = serious && label === 'standby' ? 'serious' : label;
   el.statStatus.textContent = serious && (label === 'standby' || label === 'muted')
     ? `${label} · serious`
@@ -2341,6 +2737,7 @@ function setState(state, label = state) {
 function setAccent(hex) {
   document.documentElement.style.setProperty('--accent', hex);
   orb.setAccent(hex);
+  wave.setAccent(hex);
 }
 
 let toastTimer;
@@ -2465,6 +2862,15 @@ const voice = new Voice({
       toast('Heard a double-clap — listening.');
       voice.cancelSpeech();
       voice.listenNow();
+    },
+    engine(state, name) {
+      const label = name === 'vosk' ? 'on-device' : 'browser';
+      if (state === 'loading') {
+        el.statVoice.textContent = 'loading model…';
+        toast('Downloading the on-device voice model — first time only.');
+      } else if (state === 'listening') {
+        el.statVoice.textContent = memory.settings.speak ? `${label}` : `${label} · muted`;
+      }
     },
     error(message) {
       toast(message);
@@ -2736,6 +3142,8 @@ function syncSettingsControls() {
   $('set-speak').checked = s.speak;
   $('set-always').checked = s.alwaysListen;
   $('set-clap').checked = s.clapToDictate;
+  $('set-engine').value = s.speechEngine;
+  $('engine-note').textContent = Voice.webSpeechSupported ? '' : '(browser engine unavailable here)';
   $('set-rate').value = s.rate;
   $('rate-out').textContent = `${Number(s.rate).toFixed(2)}x`;
   $('set-accent').value = s.accent;
@@ -2764,6 +3172,12 @@ function wireSettings() {
   bind('set-always', 'alwaysListen', (e) => e.checked);
   bind('set-clap', 'clapToDictate', (e) => e.checked);
   bind('set-accent', 'accent');
+
+  // Switching speech engine restarts recognition on the new one.
+  $('set-engine').addEventListener('change', (ev) => {
+    memory.setSetting('speechEngine', ev.target.value);
+    voice.reloadEngine();
+  });
 
   // Changing the model re-derives which effort levels are on offer.
   $('set-model').addEventListener('change', (ev) => {
@@ -2820,12 +3234,63 @@ function applySettings() {
     setAccent(s.accent);
   }
   applyModelReadout();
-  el.statVoice.textContent = Voice.supported ? (s.speak ? 'on' : 'muted') : 'unavailable';
-  if (s.alwaysListen && Voice.supported) voice.start();
+  el.statVoice.textContent = s.speak ? 'on' : 'muted';
+  if (s.alwaysListen) voice.start();
   else voice.stop();
   // Clap detection only makes sense once the mic analyser is live (post-boot).
   if (s.clapToDictate) voice.startClapWatch();
   else voice.stopClapWatch();
+}
+
+// --- install as an app ------------------------------------------------------
+
+/**
+ * The "Install as an app" button, made to always do something sensible instead
+ * of silently vanishing. The browser only fires `beforeinstallprompt` on a
+ * served https/localhost page in Chrome/Edge, so on a `file://` page or Safari
+ * we explain how to install rather than showing a dead button.
+ */
+function setupInstall() {
+  const btn = $('install-btn');
+  if (!btn) return;
+
+  const installed = window.matchMedia?.('(display-mode: standalone)')?.matches
+    || window.navigator.standalone === true;
+  if (installed) {
+    btn.hidden = true; // already an app
+    return;
+  }
+
+  let prompt = null;
+  btn.hidden = false; // always offer it; the handler adapts
+
+  window.addEventListener('beforeinstallprompt', (ev) => {
+    ev.preventDefault();
+    prompt = ev;
+    btn.textContent = 'Install as an app';
+  });
+  window.addEventListener('appinstalled', () => {
+    btn.hidden = true;
+    toast('JARVIS installed.');
+  });
+
+  btn.addEventListener('click', async () => {
+    if (prompt) {
+      prompt.prompt();
+      const { outcome } = await prompt.userChoice.catch(() => ({}));
+      if (outcome === 'accepted') btn.hidden = true;
+      prompt = null;
+      return;
+    }
+    // No native prompt available — say why and what to do instead.
+    if (location.protocol === 'file:') {
+      toast('To install, run the JARVIS server and open http://localhost — then install from there.');
+    } else if (/safari/i.test(navigator.userAgent) && !/chrome|chromium|edg/i.test(navigator.userAgent)) {
+      toast('In Safari: Share → Add to Dock (or Add to Home Screen) to install.');
+    } else {
+      toast('Use your browser’s install icon in the address bar to install JARVIS.');
+    }
+  });
 }
 
 // --- boot -------------------------------------------------------------------
@@ -2838,6 +3303,8 @@ async function boot() {
   await voice.enableMic();
   orb.bindLevel(() => voice.level());
   orb.start();
+  wave.bind((out) => voice.spectrum(out));
+  wave.start();
 
   // If serious mode was left on last session, its snapshot is still stored.
   if (memory.state.seriousPrev) {
@@ -2889,10 +3356,10 @@ async function init() {
   tickClock();
   setInterval(tickClock, 1000);
 
-  if (!Voice.supported) {
+  if (!Voice.webSpeechSupported) {
     el.bootNote.textContent =
-      'This browser has no speech recognition — Chrome or Edge handle the wake word. ' +
-      'You can still type, and replies are still spoken aloud.';
+      "This browser has no built-in speech recognition, so JARVIS will use its on-device " +
+      'engine — pick it in settings (it downloads a small model once). Typing always works.';
   }
   if (!proxyMode && !memory.settings.apiKey) {
     el.bootNote.textContent =
@@ -2905,6 +3372,8 @@ async function init() {
 
   // PWA: register the service worker so JARVIS installs and runs offline. Only
   // over http(s) — a file:// page or the standalone single-file build has no SW.
+
+  setupInstall();
 
   el.bootBtn.addEventListener('click', boot, { once: true });
 

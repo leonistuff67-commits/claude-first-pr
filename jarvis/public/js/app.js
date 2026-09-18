@@ -9,6 +9,7 @@ import { Brain } from './brain.js';
 import { OfflineBrain } from './offline.js';
 import { Voice } from './voice.js';
 import { Orb } from './orb.js';
+import { Wave } from './wave.js';
 import { createTools, fmtDuration } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
@@ -16,7 +17,7 @@ const MAX_TOOL_ROUNDS = 6;
 
 const el = {
   hud: $('hud'), boot: $('boot'), bootBtn: $('boot-btn'), bootNote: $('boot-note'),
-  orb: $('orb'), orbLabel: $('orb-label'), heard: $('heard'), transcript: $('transcript'),
+  orb: $('orb'), orbLabel: $('orb-label'), heard: $('heard'), transcript: $('transcript'), wave: $('wave'),
   composer: $('composer'), input: $('composer-input'), micBtn: $('mic-btn'),
   settingsBtn: $('settings-btn'), settings: $('settings'), settingsForm: $('settings-form'),
   clockTime: $('clock-time'), clockDate: $('clock-date'),
@@ -33,9 +34,12 @@ let serious = false;
 // --- presentation -----------------------------------------------------------
 
 const orb = new Orb(el.orb);
+const wave = new Wave(el.wave);
 
 function setState(state, label = state) {
   orb.setState(state);
+  // The spectrum bars light up while listening or speaking, idle otherwise.
+  wave.setActive(state === 'listening' || state === 'speaking');
   el.orbLabel.textContent = serious && label === 'standby' ? 'serious' : label;
   el.statStatus.textContent = serious && (label === 'standby' || label === 'muted')
     ? `${label} · serious`
@@ -45,6 +49,7 @@ function setState(state, label = state) {
 function setAccent(hex) {
   document.documentElement.style.setProperty('--accent', hex);
   orb.setAccent(hex);
+  wave.setAccent(hex);
 }
 
 let toastTimer;
@@ -169,6 +174,15 @@ const voice = new Voice({
       toast('Heard a double-clap — listening.');
       voice.cancelSpeech();
       voice.listenNow();
+    },
+    engine(state, name) {
+      const label = name === 'vosk' ? 'on-device' : 'browser';
+      if (state === 'loading') {
+        el.statVoice.textContent = 'loading model…';
+        toast('Downloading the on-device voice model — first time only.');
+      } else if (state === 'listening') {
+        el.statVoice.textContent = memory.settings.speak ? `${label}` : `${label} · muted`;
+      }
     },
     error(message) {
       toast(message);
@@ -440,6 +454,8 @@ function syncSettingsControls() {
   $('set-speak').checked = s.speak;
   $('set-always').checked = s.alwaysListen;
   $('set-clap').checked = s.clapToDictate;
+  $('set-engine').value = s.speechEngine;
+  $('engine-note').textContent = Voice.webSpeechSupported ? '' : '(browser engine unavailable here)';
   $('set-rate').value = s.rate;
   $('rate-out').textContent = `${Number(s.rate).toFixed(2)}x`;
   $('set-accent').value = s.accent;
@@ -468,6 +484,12 @@ function wireSettings() {
   bind('set-always', 'alwaysListen', (e) => e.checked);
   bind('set-clap', 'clapToDictate', (e) => e.checked);
   bind('set-accent', 'accent');
+
+  // Switching speech engine restarts recognition on the new one.
+  $('set-engine').addEventListener('change', (ev) => {
+    memory.setSetting('speechEngine', ev.target.value);
+    voice.reloadEngine();
+  });
 
   // Changing the model re-derives which effort levels are on offer.
   $('set-model').addEventListener('change', (ev) => {
@@ -524,12 +546,63 @@ function applySettings() {
     setAccent(s.accent);
   }
   applyModelReadout();
-  el.statVoice.textContent = Voice.supported ? (s.speak ? 'on' : 'muted') : 'unavailable';
-  if (s.alwaysListen && Voice.supported) voice.start();
+  el.statVoice.textContent = s.speak ? 'on' : 'muted';
+  if (s.alwaysListen) voice.start();
   else voice.stop();
   // Clap detection only makes sense once the mic analyser is live (post-boot).
   if (s.clapToDictate) voice.startClapWatch();
   else voice.stopClapWatch();
+}
+
+// --- install as an app ------------------------------------------------------
+
+/**
+ * The "Install as an app" button, made to always do something sensible instead
+ * of silently vanishing. The browser only fires `beforeinstallprompt` on a
+ * served https/localhost page in Chrome/Edge, so on a `file://` page or Safari
+ * we explain how to install rather than showing a dead button.
+ */
+function setupInstall() {
+  const btn = $('install-btn');
+  if (!btn) return;
+
+  const installed = window.matchMedia?.('(display-mode: standalone)')?.matches
+    || window.navigator.standalone === true;
+  if (installed) {
+    btn.hidden = true; // already an app
+    return;
+  }
+
+  let prompt = null;
+  btn.hidden = false; // always offer it; the handler adapts
+
+  window.addEventListener('beforeinstallprompt', (ev) => {
+    ev.preventDefault();
+    prompt = ev;
+    btn.textContent = 'Install as an app';
+  });
+  window.addEventListener('appinstalled', () => {
+    btn.hidden = true;
+    toast('JARVIS installed.');
+  });
+
+  btn.addEventListener('click', async () => {
+    if (prompt) {
+      prompt.prompt();
+      const { outcome } = await prompt.userChoice.catch(() => ({}));
+      if (outcome === 'accepted') btn.hidden = true;
+      prompt = null;
+      return;
+    }
+    // No native prompt available — say why and what to do instead.
+    if (location.protocol === 'file:') {
+      toast('To install, run the JARVIS server and open http://localhost — then install from there.');
+    } else if (/safari/i.test(navigator.userAgent) && !/chrome|chromium|edg/i.test(navigator.userAgent)) {
+      toast('In Safari: Share → Add to Dock (or Add to Home Screen) to install.');
+    } else {
+      toast('Use your browser’s install icon in the address bar to install JARVIS.');
+    }
+  });
 }
 
 // --- boot -------------------------------------------------------------------
@@ -542,6 +615,8 @@ async function boot() {
   await voice.enableMic();
   orb.bindLevel(() => voice.level());
   orb.start();
+  wave.bind((out) => voice.spectrum(out));
+  wave.start();
 
   // If serious mode was left on last session, its snapshot is still stored.
   if (memory.state.seriousPrev) {
@@ -593,10 +668,10 @@ async function init() {
   tickClock();
   setInterval(tickClock, 1000);
 
-  if (!Voice.supported) {
+  if (!Voice.webSpeechSupported) {
     el.bootNote.textContent =
-      'This browser has no speech recognition — Chrome or Edge handle the wake word. ' +
-      'You can still type, and replies are still spoken aloud.';
+      "This browser has no built-in speech recognition, so JARVIS will use its on-device " +
+      'engine — pick it in settings (it downloads a small model once). Typing always works.';
   }
   if (!proxyMode && !memory.settings.apiKey) {
     el.bootNote.textContent =
@@ -615,27 +690,9 @@ async function init() {
       /* first run offline, or SW unsupported — the app still works. */
     });
   }
-
-  // Reveal an "Install as an app" button when the browser offers installation.
-  let installPrompt = null;
-  const installBtn = $('install-btn');
-  window.addEventListener('beforeinstallprompt', (ev) => {
-    ev.preventDefault();
-    installPrompt = ev;
-    if (installBtn) installBtn.hidden = false;
-  });
-  installBtn?.addEventListener('click', async () => {
-    if (!installPrompt) return;
-    installBtn.hidden = true;
-    installPrompt.prompt();
-    await installPrompt.userChoice.catch(() => {});
-    installPrompt = null;
-  });
-  window.addEventListener('appinstalled', () => {
-    if (installBtn) installBtn.hidden = true;
-    toast('JARVIS installed.');
-  });
   // BUILD-STRIP-END
+
+  setupInstall();
 
   el.bootBtn.addEventListener('click', boot, { once: true });
 

@@ -20,6 +20,8 @@ const DEFAULTS = {
     webSearch: false,
     name: '',
     clapToDictate: true,     // double-clap starts a capture
+    speechEngine: 'auto',    // auto | web-speech | vosk (on-device)
+    voskModelUrl: '',        // override the default on-device model
   },
   // Set while serious mode is on, so a reload can restore the prior model/effort
   // when it's switched back off.

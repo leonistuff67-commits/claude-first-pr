@@ -15,6 +15,12 @@ can actually run.
   local pattern-matching brain — timers, tasks, memory, the clock, recolouring and
   serious mode all work offline and never touch the network. Paste an Anthropic key in
   settings whenever you want the real model; it upgrades in place.
+- **Voice that works in any browser.** Dictation runs through a pluggable recognizer:
+  the browser's built-in engine (Chrome/Edge, most accurate) or an **on-device WASM
+  engine** that captures the raw microphone — the way a game's voice chat does — and
+  transcribes it locally, offline, in any browser, with no key. Pick it in settings.
+- **A live voice spectrum.** A row of bars under the orb shows your raw audio while you
+  talk and JARVIS's own speech while it answers — you can see the mic is live.
 - **Wake word.** It listens continuously for "jarvis", captures what you say next, and
   sends it once you stop talking. No button, no push-to-talk (though Space works too).
 - **Double-clap to talk.** Two claps anywhere in the room start a capture, so you don't
@@ -107,12 +113,22 @@ granting the microphone and starting speech synthesis), then say
 | `PORT` | Server port, default `8787`. |
 | `ANTHROPIC_BASE_URL` | Point the proxy somewhere other than `api.anthropic.com` (used by the tests). |
 
-## Browser support
+## Speech engines
 
-The wake word needs the Web Speech API's `SpeechRecognition`, which today means
-Chrome or Edge. Everywhere else the app still works — you type instead, and replies
-are still spoken via `speechSynthesis`, which is universal. The UI says which mode
-you're in on the boot screen.
+Dictation goes through `recognizer.js`, which offers two interchangeable engines:
+
+- **Browser** — the Web Speech API's `SpeechRecognition`. Most accurate, zero setup, but
+  Chrome/Edge only, and it sends audio to Google.
+- **On-device** — captures the raw microphone (`getUserMedia`, exactly how game voice
+  chat works) and transcribes it locally with a [Vosk](https://alphacephei.com/vosk/)
+  WASM model. Works in **any** browser, fully offline after the model downloads once, no
+  cloud and no key. The library loads from a CDN and the model URL is configurable in
+  settings — point it at any Vosk model you host if the default is unreachable.
+
+"Automatic" uses the browser engine when it's available and falls back to on-device.
+The on-device engine is newer and less accurate than Google's, and the first use
+downloads a model, so it's opt-in. Replies are spoken via `speechSynthesis` either way,
+which every browser supports.
 
 ## How it fits together
 
@@ -124,8 +140,10 @@ you're in on the boot screen.
 | `public/js/app.js` | The turn loop, the HUD, serious mode, and the state machine. |
 | `public/js/brain.js` | Messages API client: per-model request shaping (effort, fallbacks) and SSE parsing. |
 | `public/js/offline.js` | The no-key brain: turns phrases into tool calls with no network. |
-| `public/js/voice.js` | Wake word, silence detection, barge-in, mic sampling, and the speech queue. |
+| `public/js/voice.js` | Wake-word/silence/barge-in logic, mic capture, and the speech queue. |
+| `public/js/recognizer.js` | Pluggable transcription: the browser engine and the on-device WASM engine. |
 | `public/js/clap.js` | The double-clap detector — a pure state machine, so it's unit-testable. |
+| `public/js/wave.js` | The live voice spectrum bars. |
 | `public/js/tools.js` | Tool schemas and their browser-side handlers. |
 | `public/js/memory.js` | `localStorage` state: settings, facts, tasks, conversation. |
 | `public/js/orb.js` | The canvas visualizer. |
@@ -154,7 +172,7 @@ left out on purpose. The tools it does have are the safe, browser-scoped ones ab
 ## Tests
 
 ```bash
-npm test              # SSE parser + offline interpreter + clap detector (no browser)
+npm test              # SSE parser + offline interpreter + clap detector + engine pick (no browser)
 npm run test:e2e      # served app: full turn loop in a real browser vs a mock API
 npm run test:bundle   # built jarvis.html over file://: model/effort pickers + serious mode
 npm run test:offline  # built jarvis.html with NO key: tools run locally, network untouched

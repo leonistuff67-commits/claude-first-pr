@@ -50,6 +50,8 @@
     </div>
     <div class="orb-label" id="orb-label">standby</div>
 
+    <canvas id="wave" class="wave" aria-hidden="true"></canvas>
+
     <p class="heard" id="heard"></p>
 
     <div class="transcript" id="transcript" aria-live="polite"></div>
@@ -147,6 +149,15 @@
     <label class="field field--row">
       <input type="checkbox" id="set-clap" />
       <span>Double-clap to start dictating</span>
+    </label>
+
+    <label class="field">
+      <span>Speech engine <small id="engine-note"></small></span>
+      <select id="set-engine">
+        <option value="auto">Automatic</option>
+        <option value="web-speech">Browser — Chrome/Edge, most accurate</option>
+        <option value="vosk">On-device — any browser, offline (downloads a model)</option>
+      </select>
     </label>
 
     <label class="field">
