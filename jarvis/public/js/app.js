@@ -825,8 +825,30 @@ async function init() {
   // over http(s) — a file:// page or the standalone single-file build has no SW.
   // BUILD-STRIP-START (removed from the single-file bundle)
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      // Actively adopt a new build instead of waiting for a lucky second
+      // reload — an installed app otherwise sits on a stale copy for days.
+      reg.addEventListener('updatefound', () => {
+        const fresh = reg.installing;
+        if (!fresh) return;
+        fresh.addEventListener('statechange', () => {
+          if (fresh.state === 'installed' && navigator.serviceWorker.controller) {
+            fresh.postMessage('skip-waiting');
+            toast('Updating JARVIS…');
+          }
+        });
+      });
+      reg.update().catch(() => {});
+    }).catch(() => {
       /* first run offline, or SW unsupported — the app still works. */
+    });
+
+    // When the new worker takes over, reload once so the fresh build is live.
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloading) return;
+      reloading = true;
+      window.location.reload();
     });
   }
   // BUILD-STRIP-END

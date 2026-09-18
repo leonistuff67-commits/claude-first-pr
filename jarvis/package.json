@@ -15,8 +15,9 @@
     "test:offline": "node build.mjs && node test/offline-e2e.mjs",
     "test:clap": "node build.mjs && node test/clap-e2e.mjs",
     "test:pwa": "node test/pwa.mjs",
-    "test:all": "npm test && npm run test:e2e && npm run test:bundle && npm run test:offline && npm run test:clap && npm run test:mind && npm run test:pwa",
-    "test:mind": "node build.mjs && node test/mind-e2e.mjs"
+    "test:all": "npm test && npm run test:e2e && npm run test:bundle && npm run test:offline && npm run test:clap && npm run test:mind && npm run test:pwa && npm run test:update",
+    "test:mind": "node build.mjs && node test/mind-e2e.mjs",
+    "test:update": "node test/update.mjs"
   },
   "engines": {
     "node": ">=18"
