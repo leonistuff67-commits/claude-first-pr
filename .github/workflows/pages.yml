@@ -1,6 +1,9 @@
-# Publish JARVIS to GitHub Pages so it can be installed as an app with no
-# terminal: visit the site in Chrome/Edge and hit Install.
-name: Deploy JARVIS to Pages
+# Publish JARVIS to GitHub Pages.
+#
+# Pages serves this repo from the `gh-pages` branch (GitHub's built-in branch
+# builder picked it up automatically), so this workflow builds the site and
+# pushes it there rather than using the Actions Pages deployment API.
+name: Publish JARVIS
 
 on:
   push:
@@ -11,21 +14,15 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
-# Let a running deploy finish; queue at most one more.
 concurrency:
-  group: pages
+  group: publish-jarvis
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  publish:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,14 +40,18 @@ jobs:
 
       - name: Assemble the site
         run: |
+          rm -rf _site
           mkdir -p _site
           cp -r jarvis/public/. _site/
-          # Offer the single-file build as a download alongside the app.
           cp jarvis/jarvis.html _site/jarvis.html
+          touch _site/.nojekyll
 
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-      - id: deploy
-        uses: actions/deploy-pages@v4
+      - name: Push to gh-pages
+        run: |
+          cd _site
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Publish JARVIS from ${GITHUB_SHA::7}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:gh-pages

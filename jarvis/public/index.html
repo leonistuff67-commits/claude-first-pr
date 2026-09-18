@@ -141,7 +141,17 @@
     </label>
 
     <label class="field">
-      <span>Model</span>
+      <span>Brain <small id="brain-note"></small></span>
+      <select id="set-brain">
+        <option value="auto">Automatic</option>
+        <option value="claude">Claude — needs an API key, by far the smartest</option>
+        <option value="local">Local AI — no key, runs in this browser (one-time download)</option>
+        <option value="rules">Offline rules — no key, instant, handles the basics</option>
+      </select>
+    </label>
+
+    <label class="field" id="field-model">
+      <span>Claude model</span>
       <select id="set-model"><!-- filled from Brain.models --></select>
     </label>
 

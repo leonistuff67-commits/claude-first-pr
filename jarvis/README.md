@@ -16,10 +16,15 @@ can actually run.
 - **Installs as a real app in one click.** Visit the hosted site, press Install, done —
   no terminal, no npm. It gets its own dock/taskbar icon and window, works fully
   offline, and keeps the wake word and dictation that native wrappers can't.
-- **Works with no API key.** Out of the box, with no key at all, JARVIS runs on a
-  local pattern-matching brain — timers, tasks, memory, the clock, recolouring and
-  serious mode all work offline and never touch the network. Paste an Anthropic key in
-  settings whenever you want the real model; it upgrades in place.
+- **Three brains, two of them free.** Pick in settings:
+  - **Claude** — needs an API key, by far the smartest.
+  - **Local AI** — a real language model running *in your browser* on WebGPU. No key,
+    no account, no cost; one download, then it works offline. Much smaller than Claude,
+    but it genuinely converses and drives the tools.
+  - **Offline rules** — the built-in pattern matcher. Instant, no download, handles
+    timers, tasks, memory, the clock and colours.
+
+  With no key at all JARVIS still starts and works; it never dead-ends on a missing key.
 - **Voice that works in any browser.** Dictation runs through a pluggable recognizer:
   the browser's built-in engine (Chrome/Edge, most accurate) or an **on-device WASM
   engine** that captures the raw microphone — the way a game's voice chat does — and
@@ -118,6 +123,24 @@ granting the microphone and starting speech synthesis), then say
 | `PORT` | Server port, default `8787`. |
 | `ANTHROPIC_BASE_URL` | Point the proxy somewhere other than `api.anthropic.com` (used by the tests). |
 
+## Brains
+
+`brainKind()` in `app.js` picks the engine; all three expose the same `stream()`
+contract, so the turn loop is identical whichever is driving.
+
+The **local AI** loads [WebLLM](https://github.com/mlc-ai/web-llm) from a CDN and runs a
+small instruct model (Qwen 2.5 1.5B by default) on WebGPU. Model ids are resolved
+against whatever that build of WebLLM actually ships, falling back to the smallest
+instruct model rather than requesting an id that may have been renamed. Small models
+aren't reliable at native function calling, so tools are offered through a plain JSON
+protocol in the system prompt and parsed back out — both sides are pure functions with
+unit tests. If WebGPU is missing or the engine can't download, it falls back to the rule
+brain and says so in the transcript rather than failing silently.
+
+The first load downloads roughly a gigabyte of weights, cached by the browser
+afterwards. It is *much* weaker than Claude — fine for chat, timers and notes, not for
+hard reasoning.
+
 ## Speech engines
 
 Dictation goes through `recognizer.js`, which offers two interchangeable engines:
@@ -144,7 +167,8 @@ which every browser supports.
 | `server.js` | Static host, plus an SSE-streaming proxy so the API key stays server-side. |
 | `public/js/app.js` | The turn loop, the HUD, serious mode, and the state machine. |
 | `public/js/brain.js` | Messages API client: per-model request shaping (effort, fallbacks) and SSE parsing. |
-| `public/js/offline.js` | The no-key brain: turns phrases into tool calls with no network. |
+| `public/js/offline.js` | The no-key rule brain: turns phrases into tool calls with no network. |
+| `public/js/localbrain.js` | The in-browser LLM (WebLLM/WebGPU): model resolution, tool protocol, streaming. |
 | `public/js/voice.js` | Wake-word/silence/barge-in logic, mic capture, and the speech queue. |
 | `public/js/recognizer.js` | Pluggable transcription: the browser engine and the on-device WASM engine. |
 | `public/js/clap.js` | The double-clap detector — a pure state machine, so it's unit-testable. |
@@ -178,7 +202,7 @@ left out on purpose. The tools it does have are the safe, browser-scoped ones ab
 ## Tests
 
 ```bash
-npm test              # SSE parser + offline interpreter + clap detector + engine pick (no browser)
+npm test              # SSE parser, rule brain, clap detector, engine pick, local-brain protocol
 npm run test:e2e      # served app: full turn loop in a real browser vs a mock API
 npm run test:bundle   # built jarvis.html over file://: model/effort pickers + serious mode
 npm run test:offline  # built jarvis.html with NO key: tools run locally, network untouched

@@ -19,6 +19,7 @@ const SHELL = [
   './js/orb.js',
   './js/wave.js',
   './js/mind.js',
+  './js/localbrain.js',
   './js/tools.js',
   './js/memory.js',
   './manifest.webmanifest',

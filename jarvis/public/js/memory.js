@@ -20,6 +20,8 @@ const DEFAULTS = {
     webSearch: false,
     name: '',
     clapToDictate: true,     // double-clap starts a capture
+    brain: 'auto',           // auto | claude | local (in-browser LLM) | rules
+    localModel: '',          // override the in-browser model id
     speechEngine: 'auto',    // auto | web-speech | vosk (on-device)
     voskModelUrl: '',        // override the default on-device model
   },

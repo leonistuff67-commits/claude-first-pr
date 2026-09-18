@@ -11,6 +11,7 @@ import { Voice } from './voice.js';
 import { Orb } from './orb.js';
 import { Wave } from './wave.js';
 import { MindView } from './mind.js';
+import { LocalBrain, webGpuSupported } from './localbrain.js';
 import { createTools, fmtDuration } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
@@ -194,19 +195,48 @@ function tickClock() {
 
 const brain = new Brain({ proxy: false, getSettings: () => memory.settings });
 const offlineBrain = new OfflineBrain();
+const localBrain = new LocalBrain({
+  getSettings: () => memory.settings,
+  on: {
+    progress(fraction, text) {
+      const pct = Math.round((fraction || 0) * 100);
+      el.statModel.textContent = `local AI ${pct}%`;
+      setState('thinking', 'loading model');
+      if (pct === 0 && text) toast('Downloading the local AI — one time, then it works offline.');
+    },
+    ready(modelId) {
+      toast(`Local AI ready (${modelId.split('-').slice(0, 2).join(' ')}).`);
+      applyModelReadout();
+      if (!busy) setState('idle', 'standby');
+    },
+  },
+});
 
 /**
- * Offline when there's no way to reach the model — no server-side key and none
- * pasted in. Everything still works, driven by the local pattern-matcher, so
- * you can use JARVIS while you're between API keys.
+ * Which brain drives this turn.
+ *  claude — the real model, needs a key (or the server proxy)
+ *  local  — a language model running here in the browser, no key at all
+ *  rules  — the built-in pattern matcher, no key and no download
  */
+function brainKind() {
+  const pref = memory.settings.brain || 'auto';
+  if (pref === 'local') return 'local';
+  if (pref === 'rules') return 'rules';
+  if (pref === 'claude') return 'claude';
+  return proxyMode || memory.settings.apiKey ? 'claude' : 'rules';
+}
+
+/** True when no Anthropic key is in play, whatever is driving instead. */
 function isOffline() {
-  return !proxyMode && !memory.settings.apiKey;
+  return brainKind() !== 'claude';
 }
 
 /** The engine this turn should use. */
 function engine() {
-  return isOffline() ? offlineBrain : brain;
+  const kind = brainKind();
+  if (kind === 'local') return localBrain;
+  if (kind === 'claude') return brain;
+  return offlineBrain;
 }
 
 const voice = new Voice({
@@ -524,6 +554,10 @@ function syncSettingsControls() {
   $('set-speak').checked = s.speak;
   $('set-always').checked = s.alwaysListen;
   $('set-clap').checked = s.clapToDictate;
+  $('set-brain').value = s.brain;
+  $('brain-note').textContent = webGpuSupported() ? '' : '(local AI needs WebGPU — not available here)';
+  const claudeRows = brainKind() === 'claude';
+  $('field-model').style.display = claudeRows ? '' : 'none';
   $('set-engine').value = s.speechEngine;
   $('engine-note').textContent = Voice.webSpeechSupported ? '' : '(browser engine unavailable here)';
   $('set-rate').value = s.rate;
@@ -554,6 +588,26 @@ function wireSettings() {
   bind('set-always', 'alwaysListen', (e) => e.checked);
   bind('set-clap', 'clapToDictate', (e) => e.checked);
   bind('set-accent', 'accent');
+
+  $('set-brain').addEventListener('change', async (ev) => {
+    memory.setSetting('brain', ev.target.value);
+    syncSettingsControls();
+    applyModelReadout();
+    if (ev.target.value === 'local' && !localBrain.ready) {
+      // Start the download now rather than stalling the first question.
+      try {
+        await localBrain.load();
+      } catch (err) {
+        // A toast can be overwritten by other notices, so leave a permanent
+        // explanation in the transcript too.
+        toast(err.message);
+        bubble('error', `Local AI unavailable — ${err.message} Falling back to offline rules.`);
+        memory.setSetting('brain', 'rules');
+        syncSettingsControls();
+        applyModelReadout();
+      }
+    }
+  });
 
   // Switching speech engine restarts recognition on the new one.
   $('set-engine').addEventListener('change', (ev) => {
@@ -595,8 +649,16 @@ function wireSettings() {
 }
 
 function applyModelReadout() {
-  if (isOffline()) {
-    el.statModel.textContent = 'offline (local)';
+  const kind = brainKind();
+  if (kind === 'local') {
+    el.statModel.textContent = localBrain.ready
+      ? `local AI · ${(localBrain.modelId || '').split('-')[0] || 'ready'}`
+      : 'local AI (not loaded)';
+    el.statLink.textContent = 'no key';
+    return;
+  }
+  if (kind === 'rules') {
+    el.statModel.textContent = 'offline (rules)';
     el.statLink.textContent = 'no key';
     return;
   }
@@ -710,9 +772,15 @@ async function boot() {
   }
 
   const who = memory.settings.name ? `, ${memory.settings.name}` : '';
-  const greeting = isOffline()
-    ? `Running offline${who} — timers, tasks and memory work. Add an API key in settings for the full brain.`
-    : (who ? `Good to see you${who}. Standing by.` : 'Systems online. Standing by.');
+  const kind = brainKind();
+  let greeting;
+  if (kind === 'local') {
+    greeting = `Local brain online${who}. Running entirely on this machine, no key needed.`;
+  } else if (kind === 'rules') {
+    greeting = `Running offline${who} — timers, tasks and memory work. Switch the brain to Local AI in settings for real conversation without a key.`;
+  } else {
+    greeting = who ? `Good to see you${who}. Standing by.` : 'Systems online. Standing by.';
+  }
   bubble('jarvis', greeting);
   voice.say(greeting);
 }
