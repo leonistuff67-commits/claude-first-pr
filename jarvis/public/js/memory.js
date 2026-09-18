@@ -19,7 +19,11 @@ const DEFAULTS = {
     accent: '#34e7e4',
     webSearch: false,
     name: '',
+    clapToDictate: true,     // double-clap starts a capture
   },
+  // Set while serious mode is on, so a reload can restore the prior model/effort
+  // when it's switched back off.
+  seriousPrev: null,
   facts: [],     // { id, text, at }
   tasks: [],     // { id, text, done, at }
   history: [],   // Messages API content, trimmed to the last N turns

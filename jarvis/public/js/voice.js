@@ -41,6 +41,15 @@ export class Voice {
     this.micData = null;
     this.speechEnvelope = 0;
     this.restartDelay = 250;
+
+    // Clap detection: a clap is a sharp broadband transient, so we watch a
+    // fast time-domain signal for a peak that rises and falls within a few
+    // frames rather than the sustained energy of speech.
+    this.timeData = null;
+    this.clapArmed = true;       // false during a clap's own ringout (refractory)
+    this.lastClapAt = 0;         // timestamp of the previous accepted clap
+    this.clapWatch = null;
+    this.clapBaseline = 0;       // rolling noise floor
   }
 
   // --- microphone ----------------------------------------------------------
@@ -59,11 +68,64 @@ export class Voice {
       this.audioContext = ctx;
       this.analyser = analyser;
       this.micData = new Uint8Array(analyser.frequencyBinCount);
+      this.timeData = new Uint8Array(analyser.fftSize);
       return true;
     } catch (err) {
       this.on.error?.(`Microphone unavailable: ${err.message}`);
       return false;
     }
+  }
+
+  /**
+   * Watch for a double clap and fire `on.doubleClap`. A clap shows up as a
+   * short, high-amplitude spike well above the ambient floor; two of them
+   * within a window — but not so close they're one clap's echo — count as the
+   * gesture. Ignored while JARVIS is speaking, so its own audio can't trip it.
+   */
+  startClapWatch() {
+    if (this.clapWatch || !this.analyser) return;
+
+    const PEAK = 0.55;      // fraction of full scale a clap must reach
+    const OVER_FLOOR = 0.28; // and how far above the rolling ambient floor
+    const REFRACTORY = 140;  // ms to ignore after a clap, so its ring isn't recounted
+    const GAP_MAX = 600;     // two claps this far apart or less = a double clap
+    const GAP_MIN = 130;     // any closer and it's one clap ringing, not two
+
+    this.clapWatch = setInterval(() => {
+      if (!this.analyser || this.suppressed || this.speaking) return;
+      this.analyser.getByteTimeDomainData(this.timeData);
+
+      // Peak deviation from the 128 midpoint, normalised to 0..1.
+      let peak = 0;
+      for (let i = 0; i < this.timeData.length; i++) {
+        const dev = Math.abs(this.timeData[i] - 128) / 128;
+        if (dev > peak) peak = dev;
+      }
+
+      // Slow-moving noise floor: rises fast, falls slowly.
+      this.clapBaseline += (peak - this.clapBaseline) * (peak > this.clapBaseline ? 0.25 : 0.02);
+
+      const now = performance.now();
+      const isSpike = peak > PEAK && peak - this.clapBaseline > OVER_FLOOR;
+
+      if (this.clapArmed && isSpike) {
+        this.clapArmed = false;
+        setTimeout(() => { this.clapArmed = true; }, REFRACTORY);
+
+        const gap = now - this.lastClapAt;
+        if (gap > GAP_MIN && gap < GAP_MAX) {
+          this.lastClapAt = 0;
+          this.on.doubleClap?.();
+        } else {
+          this.lastClapAt = now;
+        }
+      }
+    }, 30);
+  }
+
+  stopClapWatch() {
+    clearInterval(this.clapWatch);
+    this.clapWatch = null;
   }
 
   /** Current input loudness, 0..1. Falls back to the speech envelope while talking. */

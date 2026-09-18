@@ -6,6 +6,7 @@
  */
 import { memory } from './memory.js';
 import { Brain } from './brain.js';
+import { OfflineBrain } from './offline.js';
 import { Voice } from './voice.js';
 import { Orb } from './orb.js';
 import { createTools, fmtDuration } from './tools.js';
@@ -27,6 +28,7 @@ const el = {
 
 let busy = false;
 let proxyMode = false;
+let serious = false;
 
 // --- presentation -----------------------------------------------------------
 
@@ -34,8 +36,10 @@ const orb = new Orb(el.orb);
 
 function setState(state, label = state) {
   orb.setState(state);
-  el.orbLabel.textContent = label;
-  el.statStatus.textContent = label;
+  el.orbLabel.textContent = serious && label === 'standby' ? 'serious' : label;
+  el.statStatus.textContent = serious && (label === 'standby' || label === 'muted')
+    ? `${label} · serious`
+    : label;
 }
 
 function setAccent(hex) {
@@ -114,6 +118,21 @@ function tickClock() {
 // --- brain, voice, tools ----------------------------------------------------
 
 const brain = new Brain({ proxy: false, getSettings: () => memory.settings });
+const offlineBrain = new OfflineBrain();
+
+/**
+ * Offline when there's no way to reach the model — no server-side key and none
+ * pasted in. Everything still works, driven by the local pattern-matcher, so
+ * you can use JARVIS while you're between API keys.
+ */
+function isOffline() {
+  return !proxyMode && !memory.settings.apiKey;
+}
+
+/** The engine this turn should use. */
+function engine() {
+  return isOffline() ? offlineBrain : brain;
+}
 
 const voice = new Voice({
   getSettings: () => memory.settings,
@@ -135,8 +154,8 @@ const voice = new Voice({
       else setState('thinking', 'thinking');
     },
     bargeIn() {
-      brain.abort();
-      busy = false;
+      engine().abort();
+      setBusy(false);
       setState('idle', 'standby');
       toast('Interrupted.');
     },
@@ -144,6 +163,12 @@ const voice = new Voice({
       el.heard.textContent = '';
       el.heard.classList.remove('is-live');
       send(text);
+    },
+    doubleClap() {
+      // Same as tapping the mic: cut any speech and start capturing right away.
+      toast('Heard a double-clap — listening.');
+      voice.cancelSpeech();
+      voice.listenNow();
     },
     error(message) {
       toast(message);
@@ -157,7 +182,51 @@ const tools = createTools({
   notify: (text) => toast(text),
   setAccent,
   onTimers: renderTimers,
+  setSeriousMode: (on) => setSeriousMode(on),
 });
+
+// --- serious mode -----------------------------------------------------------
+
+/**
+ * Serious mode: jump to the strongest model at max effort for hard work, and
+ * remember the previous settings so standing down restores them. Returns the
+ * model/effort now in force, which the tool speaks back to the user.
+ */
+function setSeriousMode(on) {
+  if (on === serious) {
+    return { model: shortModel(memory.settings.model), effort: memory.settings.effort };
+  }
+
+  if (on) {
+    memory.state.seriousPrev = { model: memory.settings.model, effort: memory.settings.effort };
+    memory.setSetting('model', Brain.strongest);
+    memory.setSetting('effort', 'max');
+  } else {
+    const prev = memory.state.seriousPrev || { model: 'claude-opus-5', effort: 'low' };
+    memory.setSetting('model', prev.model);
+    memory.setSetting('effort', prev.effort);
+    memory.state.seriousPrev = null;
+  }
+
+  serious = on;
+  document.body.classList.toggle('is-serious', on);
+  if (on) {
+    // Drop the inline accent so the serious-mode CSS colour wins; the orb still
+    // gets recoloured directly.
+    document.documentElement.style.removeProperty('--accent');
+    orb.setAccent('#ff5f6d');
+  } else {
+    setAccent(memory.settings.accent);
+  }
+  syncSettingsControls();
+  applyModelReadout();
+  toast(on ? 'Serious mode engaged.' : 'Serious mode off.');
+  return { model: shortModel(memory.settings.model), effort: memory.settings.effort };
+}
+
+function shortModel(id) {
+  return Brain.models[id]?.label.split(' — ')[0] || id.replace('claude-', '');
+}
 
 // --- the prompt -------------------------------------------------------------
 
@@ -180,6 +249,13 @@ function buildSystemPrompt() {
     'Call remember on your own initiative whenever the user reveals something durable about',
     'themselves — preferences, names, plans, how they like things done. Do not announce that',
     'you are remembering unless it matters.',
+    '',
+    'Serious mode: when the user asks to "activate serious mode", "go full power" or similar,',
+    'call set_serious_mode with on=true — it switches you to the strongest model at maximum',
+    'effort for hard problems. Call it with on=false when they say to stand down or go casual.',
+    serious
+      ? 'Serious mode is currently ON — the user has asked for your most careful, thorough work.'
+      : 'Serious mode is currently off.',
     '',
     `Current local time: ${now.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}).`,
   ];
@@ -219,11 +295,17 @@ function sanitize(messages) {
 
 // --- the turn loop ----------------------------------------------------------
 
+/** Flip the busy flag and mirror it onto the DOM (handy for tests/automation). */
+function setBusy(value) {
+  busy = value;
+  document.body.dataset.busy = value ? '1' : '0';
+}
+
 async function send(text) {
   const clean = String(text).trim();
   if (!clean || busy) return;
 
-  busy = true;
+  setBusy(true);
   bubble('user', clean);
   setState('thinking', 'thinking');
 
@@ -234,7 +316,7 @@ async function send(text) {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       let replyEl = null;
 
-      const result = await brain.stream(
+      const result = await engine().stream(
         { system: buildSystemPrompt(), messages, tools: toolDefs },
         {
           text(delta) {
@@ -286,7 +368,7 @@ async function send(text) {
       setTimeout(() => setState('idle', 'standby'), 2500);
     }
   } finally {
-    busy = false;
+    setBusy(false);
     renderLists();
     if (!voice.speaking) setState('idle', 'standby');
   }
@@ -308,18 +390,64 @@ function loadVoiceOptions() {
   }
 }
 
-function wireSettings() {
+/** Fill the model picker from Brain's roster. */
+function populateModelOptions() {
+  const select = $('set-model');
+  select.innerHTML = '';
+  for (const [id, meta] of Object.entries(Brain.models)) {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = meta.label;
+    select.append(opt);
+  }
+}
+
+/** Fill the effort picker for whichever model is selected. */
+function populateEffortOptions(model) {
+  const select = $('set-effort');
+  const efforts = Brain.effortsFor(model);
+  select.innerHTML = '';
+
+  if (!efforts.length) {
+    // Haiku 4.5 has no effort knob — say so instead of showing an empty box.
+    select.disabled = true;
+    $('effort-note').textContent = '(not adjustable on this model)';
+    return;
+  }
+  select.disabled = false;
+  $('effort-note').textContent = '';
+  for (const level of efforts) {
+    const opt = document.createElement('option');
+    opt.value = level;
+    opt.textContent = level;
+    select.append(opt);
+  }
+  // Keep the stored effort if it's still valid, else fall back to a safe one.
+  const current = memory.settings.effort;
+  select.value = efforts.includes(current) ? current : 'low';
+  if (select.value !== current) memory.setSetting('effort', select.value);
+}
+
+/** Reflect the current settings into the dialog controls (also after serious mode). */
+function syncSettingsControls() {
   const s = memory.settings;
   $('set-key').value = s.apiKey;
   $('set-model').value = s.model;
-  $('set-effort').value = s.effort;
+  populateEffortOptions(s.model);
+  $('set-effort').value = Brain.effortsFor(s.model).includes(s.effort) ? s.effort : 'low';
   $('set-wake').value = s.wakeWord;
   $('set-name').value = s.name;
   $('set-speak').checked = s.speak;
   $('set-always').checked = s.alwaysListen;
+  $('set-clap').checked = s.clapToDictate;
   $('set-rate').value = s.rate;
   $('rate-out').textContent = `${Number(s.rate).toFixed(2)}x`;
   $('set-accent').value = s.accent;
+}
+
+function wireSettings() {
+  populateModelOptions();
+  syncSettingsControls();
 
   if (proxyMode) {
     $('field-key').style.display = 'none';
@@ -333,14 +461,25 @@ function wireSettings() {
   };
 
   bind('set-key', 'apiKey');
-  bind('set-model', 'model');
-  bind('set-effort', 'effort');
   bind('set-wake', 'wakeWord');
   bind('set-name', 'name');
   bind('set-voice', 'voiceURI');
   bind('set-speak', 'speak', (e) => e.checked);
   bind('set-always', 'alwaysListen', (e) => e.checked);
+  bind('set-clap', 'clapToDictate', (e) => e.checked);
   bind('set-accent', 'accent');
+
+  // Changing the model re-derives which effort levels are on offer.
+  $('set-model').addEventListener('change', (ev) => {
+    memory.setSetting('model', ev.target.value);
+    populateEffortOptions(ev.target.value);
+    memory.setSetting('effort', $('set-effort').value);
+    applySettings();
+  });
+  $('set-effort').addEventListener('change', (ev) => {
+    memory.setSetting('effort', ev.target.value);
+    applySettings();
+  });
 
   $('set-rate').addEventListener('input', (ev) => {
     const rate = Number(ev.target.value);
@@ -350,6 +489,7 @@ function wireSettings() {
 
   el.settingsBtn.addEventListener('click', () => {
     loadVoiceOptions();
+    syncSettingsControls();
     el.settings.showModal();
   });
 
@@ -362,13 +502,34 @@ function wireSettings() {
   });
 }
 
+function applyModelReadout() {
+  if (isOffline()) {
+    el.statModel.textContent = 'offline (local)';
+    el.statLink.textContent = 'no key';
+    return;
+  }
+  const s = memory.settings;
+  const effort = Brain.effortsFor(s.model).length ? ` · ${s.effort}` : '';
+  el.statModel.textContent = `${shortModel(s.model)}${effort}`;
+  el.statLink.textContent = proxyMode ? 'server proxy' : 'direct';
+}
+
 function applySettings() {
   const s = memory.settings;
-  setAccent(s.accent);
-  el.statModel.textContent = s.model.replace('claude-', '');
+  // Serious mode owns the accent (red) while it's on; don't fight it.
+  if (serious) {
+    document.documentElement.style.removeProperty('--accent');
+    orb.setAccent('#ff5f6d');
+  } else {
+    setAccent(s.accent);
+  }
+  applyModelReadout();
   el.statVoice.textContent = Voice.supported ? (s.speak ? 'on' : 'muted') : 'unavailable';
   if (s.alwaysListen && Voice.supported) voice.start();
   else voice.stop();
+  // Clap detection only makes sense once the mic analyser is live (post-boot).
+  if (s.clapToDictate) voice.startClapWatch();
+  else voice.stopClapWatch();
 }
 
 // --- boot -------------------------------------------------------------------
@@ -377,9 +538,16 @@ async function boot() {
   el.boot.classList.add('is-gone');
   el.hud.classList.add('is-live');
 
+  // Requests mic access via the browser's own permission prompt — never forced.
   await voice.enableMic();
   orb.bindLevel(() => voice.level());
   orb.start();
+
+  // If serious mode was left on last session, its snapshot is still stored.
+  if (memory.state.seriousPrev) {
+    serious = true;
+    document.body.classList.add('is-serious');
+  }
 
   applySettings();
   renderLists();
@@ -395,9 +563,10 @@ async function boot() {
     }
   }
 
-  const greeting = memory.settings.name
-    ? `Good to see you, ${memory.settings.name}. Standing by.`
-    : 'Systems online. Standing by.';
+  const who = memory.settings.name ? `, ${memory.settings.name}` : '';
+  const greeting = isOffline()
+    ? `Running offline${who} — timers, tasks and memory work. Add an API key in settings for the full brain.`
+    : (who ? `Good to see you${who}. Standing by.` : 'Systems online. Standing by.');
   bubble('jarvis', greeting);
   voice.say(greeting);
 }
@@ -417,7 +586,6 @@ async function init() {
     }
   }
   brain.proxy = proxyMode;
-  el.statLink.textContent = proxyMode ? 'server proxy' : 'direct';
 
   setAccent(memory.settings.accent);
   wireSettings();
@@ -432,8 +600,8 @@ async function init() {
   }
   if (!proxyMode && !memory.settings.apiKey) {
     el.bootNote.textContent =
-      'No API key on the server. Open settings after initializing and paste an Anthropic ' +
-      'API key — it stays in this browser.';
+      'No API key needed to start — JARVIS runs offline and still does timers, tasks, ' +
+      'memory and the clock. Paste an Anthropic key in settings whenever you want the full model.';
   }
 
   // speechSynthesis populates its voice list asynchronously.
@@ -456,7 +624,7 @@ async function init() {
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') {
       voice.cancelSpeech();
-      brain.abort();
+      engine().abort();
       return;
     }
     // Space anywhere outside a text field starts a capture.

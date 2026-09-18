@@ -59,6 +59,39 @@ const FINAL_TURN = frames([
   { type: 'message_stop' },
 ]);
 
+const SERIOUS_TURN = frames([
+  { type: 'message_start', message: { model: 'claude-opus-5' } },
+  {
+    type: 'content_block_start',
+    index: 0,
+    content_block: { type: 'tool_use', id: 'toolu_s', name: 'set_serious_mode', input: {} },
+  },
+  { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"on": true}' } },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'message_delta', delta: { stop_reason: 'tool_use' } },
+  { type: 'message_stop' },
+]);
+
+const DONE_TURN = frames([
+  { type: 'message_start', message: { model: 'claude-fable-5-1' } },
+  { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Full power.' } },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+  { type: 'message_stop' },
+]);
+
+/** Was the most recent user turn a plain string containing `needle`? */
+function lastUserSaid(body, needle) {
+  const msgs = body.messages || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user' && typeof msgs[i].content === 'string') {
+      return msgs[i].content.toLowerCase().includes(needle);
+    }
+  }
+  return false;
+}
+
 const browser = await chromium.launch({
   args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
 });
@@ -92,14 +125,19 @@ await page.route('**/v1/messages', async (route) => {
     model: body.model,
     effort: body.output_config?.effort,
   });
-  const usedTool = body.messages?.some(
-    (m) => Array.isArray(m.content) && m.content.some((b) => b.type === 'tool_result'),
-  );
-  await route.fulfill({
-    status: 200,
-    contentType: 'text/event-stream',
-    body: usedTool ? FINAL_TURN : TOOL_TURN,
-  });
+  // A continuation is when the LAST message is tool_results — not merely any
+  // message in the (retained) history, which would misfire on the next turn.
+  const last = body.messages?.[body.messages.length - 1];
+  const usedTool = Array.isArray(last?.content) && last.content.some((b) => b.type === 'tool_result');
+
+  // Continuation is decided first, otherwise the original prompt text still
+  // matches and the turn loops forever.
+  let out;
+  if (usedTool) out = body.model === 'claude-fable-5-1' ? DONE_TURN : FINAL_TURN;
+  else if (lastUserSaid(body, 'serious')) out = SERIOUS_TURN;
+  else out = TOOL_TURN;
+
+  await route.fulfill({ status: 200, contentType: 'text/event-stream', body: out });
 });
 
 try {
@@ -135,6 +173,42 @@ try {
     'true',
   );
   check('api version header set', seen[0]?.headers['anthropic-version'], '2023-06-01');
+
+  // --- model + effort pickers ---
+  await page.click('#settings-btn');
+  await page.waitForTimeout(150);
+  check('model picker lists every model', await page.locator('#set-model option').count(), 4);
+  check(
+    'effort picker offers the full range',
+    await page.locator('#set-effort option').count(),
+    (n) => n === 5,
+  );
+
+  // Haiku has no effort knob — the picker should disable itself.
+  await page.selectOption('#set-model', 'claude-haiku-4-5');
+  check('effort disabled for Haiku', await page.locator('#set-effort').evaluate((s) => s.disabled), true);
+  await page.selectOption('#set-model', 'claude-opus-5');
+  check('effort re-enabled for Opus', await page.locator('#set-effort').evaluate((s) => s.disabled), false);
+  await page.click('.settings__actions .primary');
+
+  // --- serious mode via a tool call ---
+  const before = seen.length;
+  await page.fill('#composer-input', 'jarvis activate serious mode');
+  await page.press('#composer-input', 'Enter');
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('.msg--jarvis')].some((n) => n.textContent.includes('Full power')),
+    null,
+    { timeout: 10000 },
+  );
+
+  check('serious mode styles the page', await page.locator('body').evaluate((b) => b.classList.contains('is-serious')), true);
+  const escalated = seen[seen.length - 1];
+  check('escalated to the strongest model', escalated?.model, 'claude-fable-5-1');
+  check('escalated to max effort', escalated?.effort, 'max');
+  check('serious mode reads out on the HUD', (await page.locator('#stat-model').textContent()), (t) => t.includes('max'));
+  check('server-side fallback header sent for Fable', escalated?.headers['anthropic-beta'], (h) => Boolean(h && h.includes('server-side-fallback')));
+  check('serious mode used follow-up turns', seen.length > before, true);
+
   check('no page errors', pageErrors.length, 0);
   if (pageErrors.length) console.error(pageErrors.join('\n'));
 } finally {

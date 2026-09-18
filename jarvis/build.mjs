@@ -14,7 +14,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
 
 /** Dependency order: each module may use everything above it. */
-const MODULES = ['memory.js', 'tools.js', 'brain.js', 'voice.js', 'orb.js', 'app.js'];
+const MODULES = ['memory.js', 'tools.js', 'brain.js', 'offline.js', 'voice.js', 'orb.js', 'app.js'];
 
 function stripModuleSyntax(source, name) {
   return source

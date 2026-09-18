@@ -16,6 +16,23 @@ const API_VERSION = '2023-06-01';
 /** Deliberately short: this is a spoken assistant, not an essay writer. */
 const MAX_TOKENS = 4096;
 
+/**
+ * Per-model request quirks. `effort` is not universal — Haiku 4.5 rejects
+ * output_config outright — and the refusal-fallback parameter only applies to
+ * the models that can decline a request and have somewhere to fall back to.
+ */
+const MODELS = {
+  'claude-fable-5-1': { label: 'Fable 5.1 — most capable', effort: true, fallbacks: true },
+  'claude-opus-5': { label: 'Opus 5 — sharpest', effort: true, fallbacks: true },
+  'claude-sonnet-5': { label: 'Sonnet 5 — cheaper', effort: true, fallbacks: false },
+  'claude-haiku-4-5': { label: 'Haiku 4.5 — fastest', effort: false, fallbacks: false },
+};
+
+/** The model serious mode escalates to. */
+const STRONGEST_MODEL = 'claude-fable-5-1';
+
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
 export class Brain {
   /** @param {{ proxy: boolean, getSettings: () => object }} options */
   constructor({ proxy, getSettings }) {
@@ -38,14 +55,23 @@ export class Brain {
    */
   async stream({ system, messages, tools }, on = {}) {
     const settings = this.getSettings();
+    const profile = MODELS[settings.model] || MODELS['claude-opus-5'];
     const body = {
       model: settings.model,
       max_tokens: MAX_TOKENS,
       system,
       messages,
       stream: true,
-      output_config: { effort: settings.effort || 'low' },
     };
+
+    // Haiku 4.5 has no effort control and errors if you send one.
+    if (profile.effort) body.output_config = { effort: settings.effort || 'low' };
+
+    // Fable and Opus can decline a request outright; without this the turn just
+    // stops, so let the server retry it on a fallback model inside the call.
+    this.betas = profile.fallbacks ? ['server-side-fallback-2026-07-01'] : [];
+    if (profile.fallbacks) body.fallbacks = 'default';
+
     if (tools?.length) body.tools = tools;
 
     this.controller = new AbortController();
@@ -68,7 +94,7 @@ export class Brain {
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
+          body: JSON.stringify({ ...body, betas: this.betas }),
           signal: this.controller.signal,
         },
       ];
@@ -86,11 +112,29 @@ export class Brain {
           'anthropic-version': API_VERSION,
           // Required to call the API straight from a browser.
           'anthropic-dangerous-direct-browser-access': 'true',
+          ...(this.betas?.length ? { 'anthropic-beta': this.betas.join(',') } : {}),
         },
         body: JSON.stringify(body),
         signal: this.controller.signal,
       },
     ];
+  }
+
+  static get models() {
+    return MODELS;
+  }
+
+  static get efforts() {
+    return EFFORTS;
+  }
+
+  static get strongest() {
+    return STRONGEST_MODEL;
+  }
+
+  /** Effort levels this model actually accepts (empty if it has no effort knob). */
+  static effortsFor(model) {
+    return MODELS[model]?.effort ? EFFORTS : [];
   }
 
   #explain(status, detail) {

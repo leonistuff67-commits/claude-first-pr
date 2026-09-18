@@ -133,6 +133,20 @@ export function createTools(ctx) {
         'size. Use for "how am I doing on battery" style questions.',
       input_schema: { type: 'object', properties: {}, required: [] },
     },
+    {
+      name: 'set_serious_mode',
+      description:
+        'Turn "serious mode" on or off. On serious mode, JARVIS switches to the most capable ' +
+        'model at maximum effort for hard, high-stakes work — call it with on=true when the ' +
+        'user says something like "activate serious mode" or "go full power", and on=false when ' +
+        'they say "back to normal", "casual mode" or "stand down". Tell the user in one short ' +
+        'sentence what you switched to.',
+      input_schema: {
+        type: 'object',
+        properties: { on: { type: 'boolean', description: 'true to engage, false to stand down.' } },
+        required: ['on'],
+      },
+    },
   ];
 
   const handlers = {
@@ -250,6 +264,14 @@ export function createTools(ctx) {
         }
       }
       return JSON.stringify(status);
+    },
+
+    set_serious_mode({ on }) {
+      const result = ctx.setSeriousMode?.(Boolean(on));
+      if (!result) return on ? 'Serious mode engaged.' : 'Back to normal.';
+      return on
+        ? `Serious mode engaged: ${result.model} at ${result.effort} effort.`
+        : `Stood down to ${result.model} at ${result.effort} effort.`;
     },
   };
 

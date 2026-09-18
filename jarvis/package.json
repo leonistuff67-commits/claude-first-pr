@@ -8,9 +8,10 @@
     "start": "node server.js",
     "dev": "node server.js",
     "build": "node build.mjs",
-    "test": "node --test test/brain.test.mjs",
+    "test": "node --test test/brain.test.mjs test/offline.test.mjs",
     "test:e2e": "node test/e2e.mjs",
-    "test:bundle": "node build.mjs && node test/bundle.mjs"
+    "test:bundle": "node build.mjs && node test/bundle.mjs",
+    "test:offline": "node build.mjs && node test/offline-e2e.mjs"
   },
   "engines": {
     "node": ">=18"

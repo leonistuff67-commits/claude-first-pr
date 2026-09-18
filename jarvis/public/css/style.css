@@ -443,3 +443,24 @@ body::before {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* --- serious mode -------------------------------------------------------- */
+
+/* A hotter accent and a faint pulsing frame, so "full power" is unmistakable. */
+body.is-serious {
+  --accent: #ff5f6d;
+}
+body.is-serious::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  box-shadow: inset 0 0 120px color-mix(in srgb, var(--accent) 22%, transparent);
+  animation: serious-pulse 2.6s ease-in-out infinite;
+}
+@keyframes serious-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+body.is-serious .clock__time { color: #fff; }

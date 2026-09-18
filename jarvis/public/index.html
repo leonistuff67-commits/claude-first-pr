@@ -109,20 +109,12 @@
 
     <label class="field">
       <span>Model</span>
-      <select id="set-model">
-        <option value="claude-opus-5">Claude Opus 5 — sharpest</option>
-        <option value="claude-sonnet-5">Claude Sonnet 5 — cheaper</option>
-        <option value="claude-haiku-4-5">Claude Haiku 4.5 — fastest</option>
-      </select>
+      <select id="set-model"><!-- filled from Brain.models --></select>
     </label>
 
     <label class="field">
-      <span>Effort</span>
-      <select id="set-effort">
-        <option value="low">Low — snappiest for conversation</option>
-        <option value="medium">Medium</option>
-        <option value="high">High — thinks harder, replies slower</option>
-      </select>
+      <span>Effort <small id="effort-note"></small></span>
+      <select id="set-effort"><!-- filled per selected model --></select>
     </label>
 
     <label class="field">
@@ -143,6 +135,11 @@
     <label class="field field--row">
       <input type="checkbox" id="set-always" />
       <span>Always listen for the wake word</span>
+    </label>
+
+    <label class="field field--row">
+      <input type="checkbox" id="set-clap" />
+      <span>Double-clap to start dictating</span>
     </label>
 
     <label class="field">

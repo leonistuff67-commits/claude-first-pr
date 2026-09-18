@@ -8,13 +8,24 @@ can actually run.
 
 ## What it does
 
+- **Works with no API key.** Out of the box, with no key at all, JARVIS runs on a
+  local pattern-matching brain — timers, tasks, memory, the clock, recolouring and
+  serious mode all work offline and never touch the network. Paste an Anthropic key in
+  settings whenever you want the real model; it upgrades in place.
 - **Wake word.** It listens continuously for "jarvis", captures what you say next, and
   sends it once you stop talking. No button, no push-to-talk (though Space works too).
+- **Double-clap to talk.** Two claps anywhere in the room start a capture, so you don't
+  even need the wake word. Toggle it in settings.
 - **Speaks while it thinks.** Replies are streamed from the Messages API and spoken
   sentence-by-sentence as they arrive, so the first words land while the rest is still
   being written.
 - **Barge-in.** Talk over it — "stop", "cancel", or the wake word — and it shuts up
   mid-sentence and aborts the request.
+- **Pick your model and effort.** Fable 5.1, Opus 5, Sonnet 5 or Haiku 4.5, each at the
+  effort level it supports, from the settings panel.
+- **Serious mode.** Say *"Jarvis, activate serious mode"* and it jumps to the strongest
+  model at maximum effort, turns red, and stays there until you tell it to stand down —
+  for the hard, high-stakes questions.
 - **Remembers you.** It decides on its own when something about you is worth keeping,
   and those facts are fed back into every later conversation. They live in
   `localStorage`, so they stay on your machine.
@@ -22,17 +33,25 @@ can actually run.
   links, reading local device status, and the clock.
 - **The orb reacts.** It's driven by the real microphone level through a WebAudio
   analyser while you speak, and by speech boundaries while it answers. Its colour and
-  motion follow the state machine: standby, listening, thinking, speaking.
+  motion follow the state machine: standby, listening, thinking, speaking, serious.
+
+![Serious mode: the orb and frame turn red, running offline with a local timer and stored facts](docs/serious.png)
 
 ## Running it
 
 ### The one file
 
 `jarvis.html` is the whole app — HTML, CSS and every module inlined, no server, no
-install. Double-click it, hit **Initialize**, open settings and paste an Anthropic API
-key. That key lives in `localStorage` and goes straight to the API from the browser
-using `anthropic-dangerous-direct-browser-access` — fine for something on your own
-disk, a bad idea on anything you share.
+install. Double-click it and hit **Initialize** — that's it. With no key it runs on the
+built-in offline brain (timers, tasks, memory, the clock, colours, serious mode). When
+you want the full model, open settings and paste an Anthropic API key: it lives in
+`localStorage` and goes straight to the API from the browser using
+`anthropic-dangerous-direct-browser-access` — fine for something on your own disk, a
+bad idea on anything you share.
+
+**Initialize** is also where JARVIS asks for the microphone — through the browser's
+normal permission prompt. Allow it for the wake word and double-clap; deny it and
+everything else still works.
 
 Rebuild it after changing anything under `public/` with `npm run build`.
 
@@ -75,9 +94,10 @@ you're in on the boot screen.
 | `jarvis.html` | The built single-file app. Generated — edit `public/`, not this. |
 | `build.mjs` | Inlines everything into `jarvis.html`. |
 | `server.js` | Static host, plus an SSE-streaming proxy so the API key stays server-side. |
-| `public/js/app.js` | The turn loop, the HUD, and the state machine. |
-| `public/js/brain.js` | Messages API client: builds the request, parses the SSE stream into content blocks. |
-| `public/js/voice.js` | Wake-word recognition, silence detection, barge-in, and the speech queue. |
+| `public/js/app.js` | The turn loop, the HUD, serious mode, and the state machine. |
+| `public/js/brain.js` | Messages API client: per-model request shaping (effort, fallbacks) and SSE parsing. |
+| `public/js/offline.js` | The no-key brain: turns phrases into tool calls with no network. |
+| `public/js/voice.js` | Wake word, silence detection, barge-in, the double-clap detector, and the speech queue. |
 | `public/js/tools.js` | Tool schemas and their browser-side handlers. |
 | `public/js/memory.js` | `localStorage` state: settings, facts, tasks, conversation. |
 | `public/js/orb.js` | The canvas visualizer. |
@@ -91,20 +111,34 @@ a clean user turn so a `tool_result` never ends up orphaned at the front of the
 request.
 
 Defaults are tuned for conversation rather than depth: Claude Opus 5 at `effort: "low"`,
-with a 4096-token cap. Both are in the settings panel if you want it to think harder.
+with a 4096-token cap. Both are in the settings panel — and serious mode flips them to
+the strongest model at `max` for one-off hard questions, restoring your choice when it
+stands down.
+
+### A note on "full computer access"
+
+Serious mode makes JARVIS *think* harder; it deliberately does **not** give the web page
+the ability to run commands on your machine. A browser tab that executes whatever a voice
+command — or the model — decides to run is a remote-code-execution hole, so that piece was
+left out on purpose. The tools it does have are the safe, browser-scoped ones above.
 
 ## Tests
 
 ```bash
-npm test             # SSE parser, against a stream deliberately chopped mid-frame
-npm run test:e2e     # served app: full turn loop in a real browser vs a mock API
-npm run test:bundle  # the built jarvis.html, loaded over file://, in direct mode
+npm test              # SSE parser + offline interpreter (no browser needed)
+npm run test:e2e      # served app: full turn loop in a real browser vs a mock API
+npm run test:bundle   # built jarvis.html over file://: model/effort pickers + serious mode
+npm run test:offline  # built jarvis.html with NO key: tools run locally, network untouched
 ```
 
-The unit test has no dependencies. The two browser tests need Playwright (`npm
-install`); set `PLAYWRIGHT_MODULE` to an absolute path if yours lives somewhere
-unusual. Between them they cover both transports: `test:e2e` boots the real server
-against a mock API and checks a turn that triggers a tool call — the reply, the timer
-panel, that the orb is painting, and that memory survives a reload — while
-`test:bundle` rebuilds the single file, opens it off disk, and checks the direct-mode
-request headers and the tool round trip.
+The unit tests have no dependencies. The three browser tests need Playwright (`npm
+install`); set `PLAYWRIGHT_MODULE` to an absolute path if yours lives somewhere unusual.
+Together they cover all three transports:
+
+- `test:e2e` boots the real server against a mock API and checks a tool-calling turn —
+  the reply, the timer panel, that the orb is painting, and that memory survives a reload.
+- `test:bundle` rebuilds the single file, opens it off disk in direct mode, and checks the
+  request headers, the model and effort pickers, and serious-mode escalation to the
+  strongest model at `max`.
+- `test:offline` opens the file with no key and proves the whole thing runs on the local
+  brain — a timer and a memory command land, and nothing hits the network.
