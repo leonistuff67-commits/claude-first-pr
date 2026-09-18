@@ -1,0 +1,4096 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>JARVIS</title>
+<meta name="description" content="A voice-first AI assistant with a reactive orb, persistent memory and tools." />
+<meta name="theme-color" content="#04070c" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="JARVIS" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='34' fill='%2334e7e4'/></svg>" />
+<style>
+/* ---------------------------------------------------------------------------
+   JARVIS — dark HUD. One accent colour drives everything; JS rewrites
+   --accent when the set_accent tool fires.
+   ------------------------------------------------------------------------- */
+
+:root {
+  --accent: #34e7e4;
+  --bg: #04070c;
+  --bg-2: #070d16;
+  --panel: rgba(12, 20, 32, 0.55);
+  --line: rgba(255, 255, 255, 0.08);
+  --text: #dbe7f2;
+  --muted: #6c8199;
+  --danger: #ff5f6d;
+  --font: "SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--ui);
+  overflow: hidden;
+}
+
+body::before {
+  /* Slow drifting aurora behind everything. */
+  content: "";
+  position: fixed;
+  inset: -30%;
+  background:
+    radial-gradient(40% 35% at 30% 35%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 70%),
+    radial-gradient(45% 40% at 75% 30%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%),
+    radial-gradient(60% 50% at 60% 95%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%),
+    var(--bg-2);
+  filter: blur(48px) saturate(1.1);
+  z-index: -2;
+  transition: background 600ms ease;
+  animation: drift 26s ease-in-out infinite alternate;
+}
+@keyframes drift {
+  0%   { transform: translate3d(-2%, -1%, 0) scale(1.02); }
+  50%  { transform: translate3d(2%, 1.5%, 0) scale(1.06); }
+  100% { transform: translate3d(-1%, 2%, 0) scale(1.02); }
+}
+
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.5;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--accent) 6%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 6%, transparent) 1px, transparent 1px),
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 3px);
+  background-size: 46px 46px, 46px 46px, auto;
+  mask-image: radial-gradient(120% 90% at 50% 30%, #000 40%, transparent 78%);
+  -webkit-mask-image: radial-gradient(120% 90% at 50% 30%, #000 40%, transparent 78%);
+}
+
+/* --- layout -------------------------------------------------------------- */
+
+.hud {
+  display: grid;
+  grid-template-columns: minmax(200px, 250px) 1fr minmax(200px, 250px);
+  gap: 20px;
+  height: 100%;
+  padding: 20px;
+  opacity: 0;
+  transition: opacity 700ms ease 150ms;
+}
+.hud.is-live { opacity: 1; }
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.block {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  backdrop-filter: blur(14px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.block--grow { flex: 1; }
+
+.block__title {
+  margin: 0 0 10px;
+  font: 600 10px/1 var(--font);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.badge {
+  margin-left: auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+}
+
+/* --- clock --------------------------------------------------------------- */
+
+.clock { padding: 4px 2px 0; }
+.clock__time {
+  font: 300 44px/1 var(--font);
+  letter-spacing: -0.02em;
+  color: #fff;
+  text-shadow: 0 0 26px color-mix(in srgb, var(--accent) 55%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+.clock__date {
+  margin-top: 6px;
+  font: 400 11px/1.4 var(--font);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* --- stats & lists ------------------------------------------------------- */
+
+.stats { margin: 0; font: 400 12px/1.6 var(--font); }
+.stats > div { display: flex; justify-content: space-between; gap: 10px; }
+.stats dt { color: var(--muted); }
+.stats dd { margin: 0; color: var(--text); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  font: 400 12.5px/1.5 var(--ui);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-height: 0;
+}
+.list li {
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.035);
+  border-left: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  word-break: break-word;
+}
+.list li.is-done { opacity: 0.4; text-decoration: line-through; border-left-color: var(--muted); }
+.list__empty {
+  background: none !important;
+  border-left-color: transparent !important;
+  color: var(--muted);
+  font-style: italic;
+  padding-left: 0 !important;
+}
+.list::-webkit-scrollbar { width: 6px; }
+.list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+
+/* --- stage --------------------------------------------------------------- */
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  gap: 10px;
+}
+
+.orb-wrap {
+  /* Square, so the glow and the tilted rings never get cropped by the canvas. */
+  position: relative;
+  flex: 0 1 auto;
+  aspect-ratio: 1;
+  height: min(46vh, 460px);
+  min-height: 190px;
+}
+#orb { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.orb-label {
+  font: 500 10px/1 var(--font);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--accent) 85%, white);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+
+/* --- voice spectrum ------------------------------------------------------ */
+
+.wave {
+  width: min(360px, 70%);
+  height: 46px;
+  margin: 2px auto 0;
+  display: block;
+}
+
+.heard {
+  margin: 0;
+  min-height: 18px;
+  font: 400 13px/1.3 var(--font);
+  color: var(--muted);
+  text-align: center;
+  max-width: 70ch;
+}
+.heard.is-live { color: color-mix(in srgb, var(--accent) 80%, white); }
+
+.transcript {
+  width: min(760px, 100%);
+  max-height: 32vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px;
+  scroll-behavior: smooth;
+}
+.transcript::-webkit-scrollbar { width: 6px; }
+.transcript::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+
+.msg {
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 14px;
+  line-height: 1.55;
+  max-width: 82%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  animation: rise 260ms ease both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+
+.msg--user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.msg--jarvis {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--line);
+}
+.msg--tool {
+  align-self: center;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font: 400 11px/1.4 var(--font);
+  letter-spacing: 0.06em;
+  padding: 0;
+}
+.msg--error {
+  align-self: center;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  color: #ffd6da;
+  font-size: 13px;
+}
+
+/* --- composer ------------------------------------------------------------ */
+
+.composer {
+  width: min(760px, 100%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(14px);
+}
+.composer input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font: 400 14px/1 var(--ui);
+  padding: 0 8px;
+}
+.composer input::placeholder { color: var(--muted); }
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 160ms, background 160ms, border-color 160ms, transform 120ms;
+}
+.icon-btn:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.icon-btn:active { transform: scale(0.94); }
+.icon-btn.is-hot {
+  color: #04070c;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 22px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+/* --- boot ---------------------------------------------------------------- */
+
+.boot {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: radial-gradient(60% 60% at 50% 50%, #081019, #02040a 75%);
+  z-index: 20;
+  transition: opacity 600ms ease, visibility 600ms;
+}
+.boot.is-gone { opacity: 0; visibility: hidden; pointer-events: none; }
+
+.boot__inner { text-align: center; max-width: 440px; padding: 24px; }
+.boot__title {
+  margin: 0;
+  font: 200 68px/1 var(--font);
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  color: #fff;
+  text-shadow: 0 0 44px color-mix(in srgb, var(--accent) 70%, transparent);
+  animation: flicker 4s infinite;
+}
+@keyframes flicker {
+  0%, 92%, 100% { opacity: 1; }
+  93% { opacity: 0.55; }
+  95% { opacity: 1; }
+  96% { opacity: 0.7; }
+}
+.boot__sub {
+  margin: 14px auto 32px;
+  max-width: 30ch;
+  text-indent: 0.24em;
+  text-wrap: balance;
+  font: 400 11px/1.9 var(--font);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.boot__btn {
+  padding: 13px 40px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font: 600 12px/1 var(--font);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 200ms, box-shadow 200ms, transform 120ms;
+}
+.boot__btn:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  box-shadow: 0 0 34px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.boot__btn:active { transform: scale(0.97); }
+.boot__note {
+  margin: 26px auto 0;
+  max-width: 34ch;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+/* --- settings ------------------------------------------------------------ */
+
+.settings {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #080e17;
+  color: var(--text);
+  padding: 0;
+  width: min(440px, 92vw);
+  max-height: 86vh;
+}
+.settings::backdrop { background: rgba(2, 4, 10, 0.72); backdrop-filter: blur(4px); }
+.settings__form { padding: 22px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; max-height: 86vh; }
+.settings h2 { margin: 0 0 4px; font: 600 12px/1 var(--font); letter-spacing: 0.24em; text-transform: uppercase; color: var(--muted); }
+
+.field { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.field--row { flex-direction: row; align-items: center; gap: 10px; }
+.field small { color: #4d6479; font-size: 11px; }
+.field input[type="text"],
+.field input[type="password"],
+.field select {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--text);
+  padding: 9px 11px;
+  font: 400 13px/1 var(--ui);
+  outline: none;
+}
+.field input:focus, .field select:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.field input[type="range"] { accent-color: var(--accent); }
+.field input[type="color"] { width: 54px; height: 32px; padding: 2px; background: none; border: 1px solid var(--line); border-radius: 8px; }
+.field input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+
+.settings__actions { display: flex; gap: 10px; justify-content: space-between; margin-top: 6px; }
+.settings__actions button {
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: 500 12px/1 var(--ui);
+  cursor: pointer;
+}
+.settings__actions .primary { background: var(--accent); border-color: var(--accent); color: #04070c; font-weight: 600; }
+.settings__actions .danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+
+/* --- toast --------------------------------------------------------------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translate(-50%, 20px);
+  padding: 11px 20px;
+  border-radius: 999px;
+  background: rgba(8, 14, 23, 0.94);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 240ms, transform 240ms;
+  z-index: 30;
+  max-width: 80vw;
+  text-align: center;
+}
+.toast.is-up { opacity: 1; transform: translate(-50%, 0); }
+
+/* --- narrow screens ------------------------------------------------------ */
+
+@media (max-width: 900px) {
+  .hud { grid-template-columns: 1fr; grid-template-rows: auto 1fr; padding: 12px; gap: 12px; }
+  .panel--left { flex-direction: row; overflow-x: auto; }
+  .panel--left .clock { flex: 0 0 auto; }
+  .panel--left .block { flex: 1 0 45%; }
+  .panel--right { display: none; }
+  .transcript { max-height: 26vh; }
+  .boot__title { font-size: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+
+/* --- serious mode -------------------------------------------------------- */
+
+/* A hotter accent and a faint pulsing frame, so "full power" is unmistakable. */
+body.is-serious {
+  --accent: #ff5f6d;
+}
+body.is-serious::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  box-shadow: inset 0 0 120px color-mix(in srgb, var(--accent) 22%, transparent);
+  animation: serious-pulse 2.6s ease-in-out infinite;
+}
+@keyframes serious-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+body.is-serious .clock__time { color: #fff; }
+
+/* --- install prompt (PWA) ------------------------------------------------ */
+
+.boot__install {
+  display: inline-block;
+  margin-top: 18px;
+  padding: 9px 22px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font: 500 11px/1 var(--font);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 160ms, border-color 160ms;
+}
+.boot__install:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* --- memory brain -------------------------------------------------------- */
+
+.block__action {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: transparent;
+  color: var(--accent);
+  font: 500 9px/1 var(--font);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 160ms, color 160ms;
+}
+.block__action:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: #fff;
+}
+.block__title .badge { margin-left: 8px; }
+
+.mind {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  background:
+    radial-gradient(70% 60% at 50% 45%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
+    rgba(3, 6, 11, 0.94);
+  backdrop-filter: blur(6px);
+  animation: mind-in 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.mind[hidden] { display: none; }
+@keyframes mind-in {
+  from { opacity: 0; transform: scale(1.04); }
+}
+
+.mind__canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+.mind__bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 22px 26px;
+}
+.mind__eyebrow {
+  display: block;
+  font: 500 9px/1 var(--font);
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 7px;
+}
+.mind__title h2 {
+  margin: 0;
+  font: 200 26px/1 var(--font);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: #fff;
+  text-shadow: 0 0 30px color-mix(in srgb, var(--accent) 65%, transparent);
+}
+
+.mind__search {
+  margin-left: auto;
+  width: min(280px, 34vw);
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: 400 13px/1 var(--ui);
+  outline: none;
+}
+.mind__search:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.mind__search::placeholder { color: var(--muted); }
+
+.mind__close {
+  width: 44px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font: 500 10px/1 var(--font);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.mind__close:hover { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+
+.mind__stats {
+  position: absolute;
+  left: 26px;
+  bottom: 26px;
+  display: flex;
+  gap: 22px;
+  font: 400 11px/1.5 var(--font);
+  color: var(--muted);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.mind__stats b {
+  display: block;
+  font-size: 22px;
+  font-weight: 300;
+  color: #fff;
+  letter-spacing: 0;
+  text-shadow: 0 0 22px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.mind__detail {
+  position: absolute;
+  left: 50%;
+  bottom: 92px; /* clear of the toast, which shares the bottom-centre */
+  transform: translateX(-50%);
+  max-width: min(620px, 80vw);
+  padding: 14px 20px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(8, 14, 23, 0.82);
+  text-align: center;
+  pointer-events: none;
+  transition: border-color 200ms;
+}
+.mind__detail.is-live { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.mind__detail p { margin: 0; font-size: 14.5px; line-height: 1.55; color: var(--text); }
+.mind__hint { color: var(--muted) !important; font-style: italic; }
+.mind__meta {
+  margin-top: 7px !important;
+  font: 400 10.5px/1 var(--font) !important;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted) !important;
+}
+
+@media (max-width: 720px) {
+  .mind__bar { flex-wrap: wrap; gap: 10px; padding: 16px; }
+  .mind__search { width: 100%; margin-left: 0; order: 3; }
+  .mind__stats { left: 16px; bottom: 16px; gap: 14px; }
+}
+
+/* --- depth pass ---------------------------------------------------------- */
+
+/* A vignette so the centre reads brighter than the edges. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: radial-gradient(120% 100% at 50% 40%, transparent 45%, rgba(0, 0, 0, 0.55) 100%);
+}
+
+/* Panels get a lit top edge and a deeper base, so they sit in space. */
+.block {
+  position: relative;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0) 38%),
+    var(--panel);
+  box-shadow:
+    0 18px 40px -26px rgba(0, 0, 0, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.block::before {
+  content: "";
+  position: absolute;
+  inset-inline: 16%;
+  top: -1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 60%, transparent), transparent);
+  opacity: 0.55;
+}
+
+/* The composer breathes with whatever JARVIS is doing. */
+.composer {
+  transition: border-color 300ms ease, box-shadow 300ms ease;
+}
+body[data-state="listening"] .composer {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent),
+              0 0 34px -6px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+body[data-state="thinking"] .composer {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* Concentric rings breathing behind the boot title. */
+.boot__inner { position: relative; }
+.boot__inner::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 74px;
+  width: 340px;
+  height: 340px;
+  margin: -170px 0 0 -170px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  box-shadow:
+    0 0 0 40px color-mix(in srgb, var(--accent) 5%, transparent),
+    0 0 90px -10px color-mix(in srgb, var(--accent) 35%, transparent);
+  animation: boot-ring 5s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes boot-ring {
+  0%, 100% { transform: scale(0.94); opacity: 0.5; }
+  50%      { transform: scale(1.06); opacity: 0.9; }
+}
+
+</style>
+</head>
+<body>
+
+<div class="grain" aria-hidden="true"></div>
+
+<main class="hud" id="hud">
+
+  <!-- left column ------------------------------------------------------- -->
+  <aside class="panel panel--left">
+    <section class="clock">
+      <div class="clock__time" id="clock-time">--:--</div>
+      <div class="clock__date" id="clock-date">&nbsp;</div>
+    </section>
+
+    <section class="block">
+      <h2 class="block__title">System</h2>
+      <dl class="stats" id="stats">
+        <div><dt>Status</dt><dd id="stat-status">standby</dd></div>
+        <div><dt>Model</dt><dd id="stat-model">—</dd></div>
+        <div><dt>Link</dt><dd id="stat-link">—</dd></div>
+        <div><dt>Voice</dt><dd id="stat-voice">—</dd></div>
+      </dl>
+    </section>
+
+    <section class="block">
+      <h2 class="block__title">Timers</h2>
+      <ul class="list" id="timers"><li class="list__empty">none running</li></ul>
+    </section>
+  </aside>
+
+  <!-- center ------------------------------------------------------------ -->
+  <section class="stage">
+    <div class="orb-wrap">
+      <canvas id="orb" aria-hidden="true"></canvas>
+    </div>
+    <div class="orb-label" id="orb-label">standby</div>
+
+    <canvas id="wave" class="wave" aria-hidden="true"></canvas>
+
+    <p class="heard" id="heard"></p>
+
+    <div class="transcript" id="transcript" aria-live="polite"></div>
+
+    <form class="composer" id="composer" autocomplete="off">
+      <button type="button" class="icon-btn" id="mic-btn" title="Talk (or hold Space)" aria-label="Talk">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3Z" fill="currentColor"/>
+          <path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/>
+        </svg>
+      </button>
+      <input id="composer-input" type="text" placeholder="Say &ldquo;Jarvis&hellip;&rdquo; or type here" />
+      <button type="submit" class="icon-btn" title="Send" aria-label="Send">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path d="M4 12h15M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button type="button" class="icon-btn" id="settings-btn" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="2" fill="none"/>
+          <path d="M12 2.8v2.6M12 18.6v2.6M21.2 12h-2.6M5.4 12H2.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8M18.5 18.5l-1.8-1.8M7.3 7.3 5.5 5.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </form>
+  </section>
+
+  <!-- right column ------------------------------------------------------ -->
+  <aside class="panel panel--right">
+    <section class="block">
+      <h2 class="block__title">Tasks <span class="badge" id="task-count">0</span></h2>
+      <ul class="list" id="tasks"><li class="list__empty">nothing queued</li></ul>
+    </section>
+
+    <section class="block block--grow">
+      <h2 class="block__title">
+        Memory
+        <button type="button" class="block__action" id="brain-btn" title="Open the memory brain">brain</button>
+        <span class="badge" id="fact-count">0</span>
+      </h2>
+      <ul class="list" id="facts"><li class="list__empty">nothing stored yet</li></ul>
+    </section>
+  </aside>
+</main>
+
+<!-- memory brain ---------------------------------------------------------- -->
+<div class="mind" id="mind" hidden>
+  <canvas id="mind-canvas" class="mind__canvas"></canvas>
+
+  <header class="mind__bar">
+    <div class="mind__title">
+      <span class="mind__eyebrow">memory</span>
+      <h2>The Brain</h2>
+    </div>
+    <input type="search" id="mind-search" class="mind__search" placeholder="Search memories…" />
+    <button type="button" class="mind__close" id="mind-close" aria-label="Close">esc</button>
+  </header>
+
+  <div class="mind__stats" id="mind-stats"></div>
+
+  <div class="mind__detail" id="mind-detail">
+    <p class="mind__hint">Hover a neuron to read the memory it holds.</p>
+  </div>
+</div>
+
+<!-- boot overlay --------------------------------------------------------- -->
+<div class="boot" id="boot">
+  <div class="boot__inner">
+    <h1 class="boot__title">JARVIS</h1>
+    <p class="boot__sub">voice interface &middot; persistent memory &middot; local tools</p>
+    <button class="boot__btn" id="boot-btn">Initialize</button>
+    <button class="boot__install" id="install-btn" hidden>Install as an app</button>
+    <p class="boot__note" id="boot-note">
+      Grants microphone access so the wake word works. Everything it remembers stays in this browser.
+    </p>
+  </div>
+</div>
+
+<!-- settings ------------------------------------------------------------- -->
+<dialog class="settings" id="settings">
+  <form method="dialog" class="settings__form" id="settings-form">
+    <h2>Settings</h2>
+
+    <label class="field" id="field-key">
+      <span>Anthropic API key</span>
+      <input type="password" id="set-key" placeholder="sk-ant-..." />
+      <small id="key-note">Stored in this browser only.</small>
+    </label>
+
+    <label class="field">
+      <span>Model</span>
+      <select id="set-model"><!-- filled from Brain.models --></select>
+    </label>
+
+    <label class="field">
+      <span>Effort <small id="effort-note"></small></span>
+      <select id="set-effort"><!-- filled per selected model --></select>
+    </label>
+
+    <label class="field">
+      <span>Wake word</span>
+      <input type="text" id="set-wake" placeholder="jarvis" />
+    </label>
+
+    <label class="field">
+      <span>Your name <small>(used in the system prompt)</small></span>
+      <input type="text" id="set-name" placeholder="optional" />
+    </label>
+
+    <label class="field field--row">
+      <input type="checkbox" id="set-speak" />
+      <span>Speak replies out loud</span>
+    </label>
+
+    <label class="field field--row">
+      <input type="checkbox" id="set-always" />
+      <span>Always listen for the wake word</span>
+    </label>
+
+    <label class="field field--row">
+      <input type="checkbox" id="set-clap" />
+      <span>Double-clap to start dictating</span>
+    </label>
+
+    <label class="field">
+      <span>Speech engine <small id="engine-note"></small></span>
+      <select id="set-engine">
+        <option value="auto">Automatic</option>
+        <option value="web-speech">Browser — Chrome/Edge, most accurate</option>
+        <option value="vosk">On-device — any browser, offline (downloads a model)</option>
+      </select>
+    </label>
+
+    <label class="field">
+      <span>Voice</span>
+      <select id="set-voice"><option value="">Automatic</option></select>
+    </label>
+
+    <label class="field">
+      <span>Speech rate <output id="rate-out"></output></span>
+      <input type="range" id="set-rate" min="0.6" max="1.6" step="0.05" />
+    </label>
+
+    <label class="field">
+      <span>Accent colour</span>
+      <input type="color" id="set-accent" />
+    </label>
+
+    <div class="settings__actions">
+      <button type="button" class="danger" id="wipe-btn">Erase memory</button>
+      <button value="close" class="primary">Done</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(function () {
+'use strict';
+
+// --- memory.js ---
+/**
+ * Persistent state for JARVIS: settings, long-term facts, tasks and timers.
+ * Everything lives in localStorage, so it survives reloads but never leaves
+ * the machine.
+ */
+const KEY = 'jarvis.state.v1';
+
+const DEFAULTS = {
+  settings: {
+    apiKey: '',              // only used when the server has no key of its own
+    model: 'claude-opus-5',
+    effort: 'low',           // voice wants latency over deliberation
+    wakeWord: 'jarvis',
+    alwaysListen: true,
+    speak: true,
+    voiceURI: '',
+    rate: 1.05,
+    pitch: 0.9,
+    accent: '#34e7e4',
+    webSearch: false,
+    name: '',
+    clapToDictate: true,     // double-clap starts a capture
+    speechEngine: 'auto',    // auto | web-speech | vosk (on-device)
+    voskModelUrl: '',        // override the default on-device model
+  },
+  // Set while serious mode is on, so a reload can restore the prior model/effort
+  // when it's switched back off.
+  seriousPrev: null,
+  facts: [],     // { id, text, at }
+  tasks: [],     // { id, text, done, at }
+  history: [],   // Messages API content, trimmed to the last N turns
+};
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return clone(DEFAULTS);
+    const saved = JSON.parse(raw);
+    return {
+      ...clone(DEFAULTS),
+      ...saved,
+      settings: { ...DEFAULTS.settings, ...(saved.settings || {}) },
+    };
+  } catch {
+    return clone(DEFAULTS);
+  }
+}
+
+const state = load();
+const listeners = new Set();
+
+function persist() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(state));
+  } catch {
+    // Quota exceeded or storage disabled — degrade to in-memory only.
+  }
+  for (const fn of listeners) fn(state);
+}
+
+function id() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+const memory = {
+  state,
+
+  subscribe(fn) {
+    listeners.add(fn);
+    fn(state);
+    return () => listeners.delete(fn);
+  },
+
+  get settings() {
+    return state.settings;
+  },
+
+  setSetting(key, value) {
+    state.settings[key] = value;
+    persist();
+  },
+
+  // --- long-term facts -----------------------------------------------------
+
+  remember(text) {
+    const fact = { id: id(), text: String(text).trim(), at: Date.now() };
+    if (!fact.text) return null;
+    state.facts.push(fact);
+    persist();
+    return fact;
+  },
+
+  recall(query = '') {
+    const q = String(query).toLowerCase().trim();
+    if (!q) return state.facts.slice(-25);
+    return state.facts.filter((f) => f.text.toLowerCase().includes(q));
+  },
+
+  forget(query) {
+    const q = String(query).toLowerCase().trim();
+    const before = state.facts.length;
+    state.facts = state.facts.filter(
+      (f) => f.id !== query && !(q && f.text.toLowerCase().includes(q)),
+    );
+    persist();
+    return before - state.facts.length;
+  },
+
+  // --- tasks ---------------------------------------------------------------
+
+  addTask(text) {
+    const task = { id: id(), text: String(text).trim(), done: false, at: Date.now() };
+    if (!task.text) return null;
+    state.tasks.push(task);
+    persist();
+    return task;
+  },
+
+  completeTask(query) {
+    const q = String(query).toLowerCase().trim();
+    const task = state.tasks.find(
+      (t) => !t.done && (t.id === query || t.text.toLowerCase().includes(q)),
+    );
+    if (task) {
+      task.done = true;
+      persist();
+    }
+    return task;
+  },
+
+  clearDoneTasks() {
+    state.tasks = state.tasks.filter((t) => !t.done);
+    persist();
+  },
+
+  get tasks() {
+    return state.tasks;
+  },
+
+  get facts() {
+    return state.facts;
+  },
+
+  // --- conversation --------------------------------------------------------
+
+  get history() {
+    return state.history;
+  },
+
+  pushHistory(message) {
+    state.history.push(message);
+    // Keep the transcript bounded so the request stays small and fast.
+    if (state.history.length > 40) state.history = state.history.slice(-40);
+    persist();
+  },
+
+  replaceHistory(messages) {
+    state.history = messages.slice(-40);
+    persist();
+  },
+
+  clearHistory() {
+    state.history = [];
+    persist();
+  },
+
+  wipe() {
+    Object.assign(state, clone(DEFAULTS), { settings: state.settings });
+    persist();
+  },
+};
+// --- end memory.js ---
+
+// --- tools.js ---
+/**
+ * Client-side tools. Each entry pairs a Messages API tool definition with the
+ * handler that runs in the browser when Claude calls it. Handlers return a
+ * string (or a promise for one) which is sent back as the tool_result.
+ */
+
+const timers = new Map();
+
+function fmtDuration(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  return [h && `${h}h`, m && `${m}m`, (r || !s) && `${r}s`].filter(Boolean).join(' ');
+}
+
+/**
+ * @param {object} ctx  Hooks back into the app: { say, notify, setAccent, onTimers }
+ */
+function createTools(ctx) {
+  const defs = [
+    {
+      name: 'get_datetime',
+      description:
+        "Get the user's current local date, time and timezone. Use this whenever the " +
+        'answer depends on "now" — never guess the time.',
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'remember',
+      description:
+        'Store a durable fact about the user (preferences, names, routines, context worth ' +
+        'keeping). Store one fact per call, phrased so it still makes sense weeks later.',
+      input_schema: {
+        type: 'object',
+        properties: { fact: { type: 'string', description: 'The fact to remember.' } },
+        required: ['fact'],
+      },
+    },
+    {
+      name: 'recall',
+      description:
+        'Search stored facts about the user. Known facts are already in your system prompt; ' +
+        'use this only to search beyond what you were given.',
+      input_schema: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'Substring to search for. Empty returns recent facts.' } },
+        required: [],
+      },
+    },
+    {
+      name: 'forget',
+      description: 'Delete stored facts matching a phrase. Confirm with the user before calling.',
+      input_schema: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'Phrase identifying the fact(s) to delete.' } },
+        required: ['query'],
+      },
+    },
+    {
+      name: 'add_task',
+      description: "Add an item to the user's task board.",
+      input_schema: {
+        type: 'object',
+        properties: { task: { type: 'string' } },
+        required: ['task'],
+      },
+    },
+    {
+      name: 'list_tasks',
+      description: 'List the tasks on the board with their status.',
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'complete_task',
+      description: 'Mark a task done by describing it.',
+      input_schema: {
+        type: 'object',
+        properties: { task: { type: 'string', description: 'Text identifying the task.' } },
+        required: ['task'],
+      },
+    },
+    {
+      name: 'set_timer',
+      description:
+        'Start a countdown timer. JARVIS announces it out loud when it fires. Convert any ' +
+        'spoken duration ("ten minutes", "an hour and a half") into seconds yourself.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          seconds: { type: 'number', description: 'Duration in seconds.' },
+          label: { type: 'string', description: 'What the timer is for, e.g. "pasta".' },
+        },
+        required: ['seconds'],
+      },
+    },
+    {
+      name: 'cancel_timer',
+      description: 'Cancel a running timer by label, or all of them.',
+      input_schema: {
+        type: 'object',
+        properties: { label: { type: 'string', description: 'Label to cancel. Omit to cancel everything.' } },
+        required: [],
+      },
+    },
+    {
+      name: 'set_accent',
+      description:
+        "Recolor the interface. Accepts a CSS hex color. Use when the user asks JARVIS to " +
+        'change its look or mood.',
+      input_schema: {
+        type: 'object',
+        properties: { color: { type: 'string', description: 'Hex color such as #ff5f6d.' } },
+        required: ['color'],
+      },
+    },
+    {
+      name: 'open_url',
+      description:
+        'Open a URL in a new browser tab. Only call this when the user clearly asked to open ' +
+        'or go to something.',
+      input_schema: {
+        type: 'object',
+        properties: { url: { type: 'string', description: 'Absolute https:// URL.' } },
+        required: ['url'],
+      },
+    },
+    {
+      name: 'system_status',
+      description:
+        'Read the local device status: battery level, charging state, network type and screen ' +
+        'size. Use for "how am I doing on battery" style questions.',
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'set_serious_mode',
+      description:
+        'Turn "serious mode" on or off. On serious mode, JARVIS switches to the most capable ' +
+        'model at maximum effort for hard, high-stakes work — call it with on=true when the ' +
+        'user says something like "activate serious mode" or "go full power", and on=false when ' +
+        'they say "back to normal", "casual mode" or "stand down". Tell the user in one short ' +
+        'sentence what you switched to.',
+      input_schema: {
+        type: 'object',
+        properties: { on: { type: 'boolean', description: 'true to engage, false to stand down.' } },
+        required: ['on'],
+      },
+    },
+  ];
+
+  const handlers = {
+    get_datetime() {
+      const now = new Date();
+      return JSON.stringify({
+        iso: now.toISOString(),
+        local: now.toLocaleString(),
+        weekday: now.toLocaleDateString(undefined, { weekday: 'long' }),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      });
+    },
+
+    remember({ fact }) {
+      const stored = memory.remember(fact);
+      return stored ? `Stored: "${stored.text}"` : 'Nothing to store — the fact was empty.';
+    },
+
+    recall({ query = '' }) {
+      const hits = memory.recall(query);
+      if (!hits.length) return 'No stored facts match that.';
+      return hits.map((f) => `- ${f.text}`).join('\n');
+    },
+
+    forget({ query }) {
+      const n = memory.forget(query);
+      return n ? `Deleted ${n} fact(s) matching "${query}".` : `Nothing matched "${query}".`;
+    },
+
+    add_task({ task }) {
+      const added = memory.addTask(task);
+      return added ? `Added to the board: "${added.text}"` : 'Nothing to add.';
+    },
+
+    list_tasks() {
+      const list = memory.tasks;
+      if (!list.length) return 'The task board is empty.';
+      return list.map((t) => `[${t.done ? 'x' : ' '}] ${t.text}`).join('\n');
+    },
+
+    complete_task({ task }) {
+      const done = memory.completeTask(task);
+      return done ? `Marked done: "${done.text}"` : `No open task matches "${task}".`;
+    },
+
+    set_timer({ seconds, label = 'timer' }) {
+      const secs = Number(seconds);
+      if (!Number.isFinite(secs) || secs <= 0) return 'Invalid duration.';
+      const key = String(label).toLowerCase();
+      clearTimeout(timers.get(key)?.handle);
+      const handle = setTimeout(() => {
+        timers.delete(key);
+        ctx.onTimers?.([...timers.values()]);
+        ctx.notify?.(`Timer done: ${label}`);
+        ctx.say?.(`Your ${label} timer is up.`);
+      }, secs * 1000);
+      timers.set(key, { handle, label, endsAt: Date.now() + secs * 1000 });
+      ctx.onTimers?.([...timers.values()]);
+      return `Timer "${label}" set for ${fmtDuration(secs)}.`;
+    },
+
+    cancel_timer({ label } = {}) {
+      if (!label) {
+        const n = timers.size;
+        for (const t of timers.values()) clearTimeout(t.handle);
+        timers.clear();
+        ctx.onTimers?.([]);
+        return n ? `Cancelled ${n} timer(s).` : 'No timers were running.';
+      }
+      const key = String(label).toLowerCase();
+      const found = timers.get(key);
+      if (!found) return `No timer named "${label}".`;
+      clearTimeout(found.handle);
+      timers.delete(key);
+      ctx.onTimers?.([...timers.values()]);
+      return `Cancelled the "${label}" timer.`;
+    },
+
+    set_accent({ color }) {
+      const hex = String(color).trim();
+      if (!/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(hex)) return `"${color}" is not a hex color.`;
+      ctx.setAccent?.(hex);
+      memory.setSetting('accent', hex);
+      return `Accent set to ${hex}.`;
+    },
+
+    open_url({ url }) {
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch {
+        return `"${url}" is not a valid URL.`;
+      }
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        return 'Only http(s) URLs can be opened.';
+      }
+      window.open(parsed.href, '_blank', 'noopener');
+      return `Opened ${parsed.href}.`;
+    },
+
+    async system_status() {
+      const status = {
+        screen: `${window.screen.width}x${window.screen.height}`,
+        online: navigator.onLine,
+        language: navigator.language,
+      };
+      const conn = navigator.connection;
+      if (conn) status.network = { type: conn.effectiveType, downlinkMbps: conn.downlink };
+      if (navigator.getBattery) {
+        try {
+          const b = await navigator.getBattery();
+          status.battery = { percent: Math.round(b.level * 100), charging: b.charging };
+        } catch {
+          // Battery API refused; leave it out.
+        }
+      }
+      return JSON.stringify(status);
+    },
+
+    set_serious_mode({ on }) {
+      const result = ctx.setSeriousMode?.(Boolean(on));
+      if (!result) return on ? 'Serious mode engaged.' : 'Back to normal.';
+      return on
+        ? `Serious mode engaged: ${result.model} at ${result.effort} effort.`
+        : `Stood down to ${result.model} at ${result.effort} effort.`;
+    },
+  };
+
+  return {
+    definitions: defs,
+
+    /** Run a tool_use block and return its string result. */
+    async run(name, input) {
+      const fn = handlers[name];
+      if (!fn) return `Unknown tool "${name}".`;
+      try {
+        return String(await fn(input || {}));
+      } catch (err) {
+        return `Tool "${name}" failed: ${err.message}`;
+      }
+    },
+
+    activeTimers() {
+      return [...timers.values()];
+    },
+  };
+}
+// --- end tools.js ---
+
+// --- brain.js ---
+/**
+ * The talking-to-Claude half of JARVIS.
+ *
+ * Streams the Messages API over SSE and rebuilds the assistant's content
+ * blocks as they arrive, so the UI can render text and the voice can start
+ * speaking before the turn is finished.
+ *
+ * Two transports:
+ *   - proxy mode  (default) -> POST /api/chat, key stays on the server
+ *   - direct mode (fallback) -> api.anthropic.com from the browser, using a key
+ *     the user pasted into settings
+ */
+const API_URL = 'https://api.anthropic.com/v1/messages';
+const API_VERSION = '2023-06-01';
+
+/** Deliberately short: this is a spoken assistant, not an essay writer. */
+const MAX_TOKENS = 4096;
+
+/**
+ * Per-model request quirks. `effort` is not universal — Haiku 4.5 rejects
+ * output_config outright — and the refusal-fallback parameter only applies to
+ * the models that can decline a request and have somewhere to fall back to.
+ */
+const MODELS = {
+  'claude-fable-5-1': { label: 'Fable 5.1 — most capable', effort: true, fallbacks: true },
+  'claude-opus-5': { label: 'Opus 5 — sharpest', effort: true, fallbacks: true },
+  'claude-sonnet-5': { label: 'Sonnet 5 — cheaper', effort: true, fallbacks: false },
+  'claude-haiku-4-5': { label: 'Haiku 4.5 — fastest', effort: false, fallbacks: false },
+};
+
+/** The model serious mode escalates to. */
+const STRONGEST_MODEL = 'claude-fable-5-1';
+
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+class Brain {
+  /** @param {{ proxy: boolean, getSettings: () => object }} options */
+  constructor({ proxy, getSettings }) {
+    this.proxy = proxy;
+    this.getSettings = getSettings;
+    this.controller = null;
+  }
+
+  abort() {
+    this.controller?.abort();
+    this.controller = null;
+  }
+
+  /**
+   * Run one streamed turn.
+   *
+   * @param {object} req  { system, messages, tools }
+   * @param {object} on   { text, toolUse, blockStart } callbacks
+   * @returns {Promise<{content: object[], stopReason: string|null, model: string|null}>}
+   */
+  async stream({ system, messages, tools }, on = {}) {
+    const settings = this.getSettings();
+    const profile = MODELS[settings.model] || MODELS['claude-opus-5'];
+    const body = {
+      model: settings.model,
+      max_tokens: MAX_TOKENS,
+      system,
+      messages,
+      stream: true,
+    };
+
+    // Haiku 4.5 has no effort control and errors if you send one.
+    if (profile.effort) body.output_config = { effort: settings.effort || 'low' };
+
+    // Fable and Opus can decline a request outright; without this the turn just
+    // stops, so let the server retry it on a fallback model inside the call.
+    this.betas = profile.fallbacks ? ['server-side-fallback-2026-07-01'] : [];
+    if (profile.fallbacks) body.fallbacks = 'default';
+
+    if (tools?.length) body.tools = tools;
+
+    this.controller = new AbortController();
+    const [url, init] = this.#request(body);
+    const res = await fetch(url, init);
+
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(this.#explain(res.status, detail));
+    }
+
+    return this.#consume(res, on);
+  }
+
+  #request(body) {
+    const settings = this.getSettings();
+    if (this.proxy) {
+      return [
+        '/api/chat',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...body, betas: this.betas }),
+          signal: this.controller.signal,
+        },
+      ];
+    }
+    if (!settings.apiKey) {
+      throw new Error('No API key. Add one in settings, or start the server with ANTHROPIC_API_KEY set.');
+    }
+    return [
+      API_URL,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': settings.apiKey,
+          'anthropic-version': API_VERSION,
+          // Required to call the API straight from a browser.
+          'anthropic-dangerous-direct-browser-access': 'true',
+          ...(this.betas?.length ? { 'anthropic-beta': this.betas.join(',') } : {}),
+        },
+        body: JSON.stringify(body),
+        signal: this.controller.signal,
+      },
+    ];
+  }
+
+  static get models() {
+    return MODELS;
+  }
+
+  static get efforts() {
+    return EFFORTS;
+  }
+
+  static get strongest() {
+    return STRONGEST_MODEL;
+  }
+
+  /** Effort levels this model actually accepts (empty if it has no effort knob). */
+  static effortsFor(model) {
+    return MODELS[model]?.effort ? EFFORTS : [];
+  }
+
+  #explain(status, detail) {
+    let message = detail;
+    try {
+      message = JSON.parse(detail)?.error?.message || JSON.parse(detail)?.error || detail;
+    } catch {
+      // Non-JSON error body; use it as-is.
+    }
+    if (status === 401) return 'The API key was rejected (401). Check it in settings.';
+    if (status === 429) return 'Rate limited (429). Give it a moment and try again.';
+    if (status === 501) return String(message);
+    return `API error ${status}: ${message || 'no detail'}`;
+  }
+
+  /** Parse the SSE stream into finished content blocks. */
+  async #consume(res, on) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const blocks = [];
+    let stopReason = null;
+    let model = null;
+    let buffer = '';
+    const partialJson = new Map(); // block index -> accumulated input_json_delta
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE frames are separated by a blank line.
+      let split;
+      while ((split = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, split);
+        buffer = buffer.slice(split + 2);
+
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
+        if (!dataLine) continue;
+
+        let event;
+        try {
+          event = JSON.parse(dataLine.slice(5).trim());
+        } catch {
+          continue;
+        }
+
+        switch (event.type) {
+          case 'message_start':
+            model = event.message?.model || null;
+            break;
+
+          case 'content_block_start': {
+            const block = structuredClone(event.content_block);
+            blocks[event.index] = block;
+            if (block.type === 'tool_use' || block.type === 'server_tool_use') {
+              partialJson.set(event.index, '');
+            }
+            on.blockStart?.(block);
+            break;
+          }
+
+          case 'content_block_delta': {
+            const block = blocks[event.index];
+            const delta = event.delta;
+            if (!block || !delta) break;
+            if (delta.type === 'text_delta') {
+              block.text = (block.text || '') + delta.text;
+              on.text?.(delta.text);
+            } else if (delta.type === 'thinking_delta') {
+              block.thinking = (block.thinking || '') + delta.thinking;
+            } else if (delta.type === 'signature_delta') {
+              block.signature = (block.signature || '') + delta.signature;
+            } else if (delta.type === 'input_json_delta') {
+              partialJson.set(event.index, (partialJson.get(event.index) || '') + delta.partial_json);
+            }
+            break;
+          }
+
+          case 'content_block_stop': {
+            const block = blocks[event.index];
+            if (block && partialJson.has(event.index)) {
+              const raw = partialJson.get(event.index);
+              // Tool inputs always arrive as JSON text; an empty string means no args.
+              try {
+                block.input = raw ? JSON.parse(raw) : {};
+              } catch {
+                block.input = {};
+                block._parseError = raw;
+              }
+              partialJson.delete(event.index);
+              if (block.type === 'tool_use') on.toolUse?.(block);
+            }
+            break;
+          }
+
+          case 'message_delta':
+            stopReason = event.delta?.stop_reason ?? stopReason;
+            break;
+
+          case 'error':
+            throw new Error(event.error?.message || 'Stream error');
+
+          default:
+            break;
+        }
+      }
+    }
+
+    this.controller = null;
+    return { content: blocks.filter(Boolean), stopReason, model };
+  }
+}
+// --- end brain.js ---
+
+// --- offline.js ---
+/**
+ * Offline brain — JARVIS with no API key and no network.
+ *
+ * It can't reason like the model, but it recognises the things the built-in
+ * tools already do (timers, tasks, memory, the clock, recolouring, serious
+ * mode) by matching plain phrases, and answers small talk from a canned set.
+ * The point is that the whole interface — voice, orb, memory, tools — stays
+ * usable while you're between keys.
+ *
+ * It mimics just enough of Brain's shape (a `stream` that drives the same
+ * callbacks and returns tool_use blocks) that app.js can treat it the same way.
+ */
+
+const NUMBER_WORDS = {
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+  eight: 8, nine: 9, ten: 10, fifteen: 15, twenty: 20, thirty: 30, forty: 40,
+  'forty-five': 45, sixty: 60, ninety: 90,
+};
+
+/** Parse "10 minutes", "an hour and a half", "90 seconds" into seconds. */
+function parseDuration(text) {
+  const t = text.toLowerCase();
+  let total = 0;
+  let matched = false;
+  const re = /(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|fifteen|twenty|thirty|forty|forty-five|sixty|ninety)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b/g;
+  let m;
+  while ((m = re.exec(t)) !== null) {
+    matched = true;
+    const n = /^\d+$/.test(m[1]) ? Number(m[1]) : NUMBER_WORDS[m[1]] ?? 1;
+    const unit = m[2][0];
+    total += unit === 'h' ? n * 3600 : unit === 'm' ? n * 60 : n;
+  }
+  if (t.includes('half an hour') || t.includes('half hour')) { total += 1800; matched = true; }
+  if (/\band a half\b/.test(t) && t.includes('hour')) total += 1800;
+  return matched ? total : 0;
+}
+
+/** Strip a label out of "set a timer for X for the pasta". */
+function timerLabel(text) {
+  const m = text.match(/\bfor (?:the |my )?([a-z][a-z\s]{1,30})$/i);
+  if (m && !/\b(minutes?|seconds?|hours?|mins?|secs?)\b/i.test(m[1])) return m[1].trim();
+  if (/\bpasta|tea|coffee|eggs|laundry|oven|break\b/i.test(text)) {
+    return text.match(/\bpasta|tea|coffee|eggs|laundry|oven|break\b/i)[0].toLowerCase();
+  }
+  return 'timer';
+}
+
+const GREETINGS = [
+  "I'm here.", 'Standing by.', 'At your service.', 'Go ahead.',
+];
+const UNKNOWN = [
+  "I'm running offline right now, so I can only handle timers, tasks, memory, " +
+    'the time, and colours. Add an API key in settings for the full brain.',
+  "That's beyond what I can do without an API key — but I can still set timers, " +
+    'keep tasks and remember things. Open settings to connect the full model.',
+];
+
+const pick = (list) => list[Math.floor(Math.random() * list.length)];
+
+/**
+ * Turn a phrase into a tool call the app can run, or a plain spoken reply.
+ * Returns { tool, input } or { text }.
+ */
+function interpret(raw) {
+  const text = raw.trim();
+  const t = text.toLowerCase();
+
+  if (/\b(serious mode|full power|maximum power|max power)\b/.test(t)) {
+    const on = !/\b(off|stand down|normal|casual|stop|exit|deactivate)\b/.test(t);
+    return { tool: 'set_serious_mode', input: { on } };
+  }
+
+  if (/\bwhat("?s| is)? the time|what time is it|current time\b/.test(t)) {
+    return { tool: 'get_datetime', input: {} };
+  }
+  if (/\bwhat("?s| is)? (the |today("?s)? )?date|what day is it\b/.test(t)) {
+    return { tool: 'get_datetime', input: {} };
+  }
+
+  if (/\b(set|start|make|put on)\b.*\btimer\b/.test(t) || /\btimer\b.*\bfor\b/.test(t) || /\bremind me in\b/.test(t)) {
+    const seconds = parseDuration(t);
+    if (!seconds) return { text: 'How long should the timer run?' };
+    return { tool: 'set_timer', input: { seconds, label: timerLabel(text) } };
+  }
+  if (/\bcancel\b.*\btimer|stop the timer\b/.test(t)) {
+    const label = t.match(/\bcancel (?:the )?([a-z]+) timer\b/)?.[1];
+    return { tool: 'cancel_timer', input: label ? { label } : {} };
+  }
+
+  if (/\b(add|new|create)\b.*\btask\b|\badd .* to (my |the )?(list|tasks|board)\b|\bremind me to\b|\bi need to\b/.test(t)) {
+    const task = text
+      .replace(/^.*?\b(add|new task|create a task|remind me to|i need to)\b[:,]?\s*/i, '')
+      .replace(/\bto (my|the) (list|tasks|board)\b/i, '')
+      .trim();
+    return { tool: 'add_task', input: { task: task || text } };
+  }
+  if (/\b(what|show|list|read).*(tasks|to-?do|list|board)\b/.test(t)) {
+    return { tool: 'list_tasks', input: {} };
+  }
+  if (/\b(done|finished|completed|complete|check off|mark)\b/.test(t) && memory.tasks.some((x) => !x.done)) {
+    const task = text.replace(/^.*?\b(done|finished|completed|complete|check off|mark)\b\s*(with|the)?\s*/i, '').trim();
+    return { tool: 'complete_task', input: { task } };
+  }
+
+  if (/\b(remember|note|keep in mind|don'?t forget)\b/.test(t)) {
+    const fact = text.replace(/^.*?\b(remember|note|keep in mind that|keep in mind|don'?t forget)\b[:,]?\s*(that )?/i, '').trim();
+    return fact ? { tool: 'remember', input: { fact } } : { text: 'What should I remember?' };
+  }
+  if (/\bwhat do you (know|remember)\b|\bwhat have you got on me\b/.test(t)) {
+    return { tool: 'recall', input: {} };
+  }
+  if (/\bforget\b/.test(t)) {
+    const query = text.replace(/^.*?\bforget\b\s*(about |that )?/i, '').trim();
+    return query ? { tool: 'forget', input: { query } } : { text: 'Forget what, exactly?' };
+  }
+
+  const colour = t.match(/#[0-9a-f]{6}\b/) ||
+    t.match(/\b(red|crimson|orange|amber|gold|yellow|lime|green|teal|cyan|blue|indigo|violet|purple|magenta|pink|white)\b/);
+  if (colour && /\b(colou?r|accent|turn|go|make|paint|mood)\b/.test(t)) {
+    const NAMED = {
+      red: '#ff5f6d', crimson: '#dc143c', orange: '#ff8c42', amber: '#ffbf00', gold: '#ffd700',
+      yellow: '#ffe14d', lime: '#7cff6b', green: '#34e77a', teal: '#34e7e4', cyan: '#22d3ee',
+      blue: '#4d9fff', indigo: '#6366f1', violet: '#8b5cf6', purple: '#a855f7', magenta: '#ff4dd8',
+      pink: '#ff7eb6', white: '#e8f0f8',
+    };
+    return { tool: 'set_accent', input: { color: colour[0].startsWith('#') ? colour[0] : NAMED[colour[0]] } };
+  }
+
+  if (/\bbattery|how am i doing on power|system status\b/.test(t)) {
+    return { tool: 'system_status', input: {} };
+  }
+
+  if (/\b(hi|hey|hello|yo|jarvis|you there|you awake)\b/.test(t) && t.length < 30) {
+    return { text: pick(GREETINGS) };
+  }
+  if (/\b(thanks|thank you|cheers|nice|great|perfect)\b/.test(t)) {
+    return { text: pick(['Any time.', 'Of course.', 'Happy to help.']) };
+  }
+  if (/\bhow are you|how'?s it going\b/.test(t)) {
+    return { text: 'Running fine — offline, but fine.' };
+  }
+
+  return { text: pick(UNKNOWN) };
+}
+
+let idCounter = 0;
+
+class OfflineBrain {
+  constructor() {
+    this.betas = [];
+  }
+
+  abort() {}
+
+  static get isOffline() {
+    return true;
+  }
+
+  /**
+   * Same signature as Brain.stream. If the interpreter picks a tool we return a
+   * tool_use block (app.js runs it and calls us back with the result); if it
+   * picks text we "type" it out through the on.text callback so the UI and
+   * voice behave exactly as they do online.
+   */
+  async stream({ messages }, on = {}) {
+    const last = messages[messages.length - 1];
+
+    // A continuation: the app handed us tool results. Speak a short confirmation
+    // built from them and end the turn.
+    if (Array.isArray(last?.content) && last.content.some((b) => b.type === 'tool_result')) {
+      const said = last.content
+        .filter((b) => b.type === 'tool_result')
+        .map((b) => (typeof b.content === 'string' ? b.content : ''))
+        .join(' ')
+        .trim();
+      const reply = said || 'Done.';
+      await this.#type(reply, on);
+      return { content: [{ type: 'text', text: reply }], stopReason: 'end_turn', model: 'offline' };
+    }
+
+    const utterance = typeof last?.content === 'string'
+      ? last.content
+      : (last?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join(' ');
+
+    const decision = interpret(utterance);
+
+    if (decision.tool) {
+      const block = {
+        type: 'tool_use',
+        id: `offline_${++idCounter}`,
+        name: decision.tool,
+        input: decision.input,
+      };
+      on.toolUse?.(block);
+      return { content: [block], stopReason: 'tool_use', model: 'offline' };
+    }
+
+    await this.#type(decision.text, on);
+    return { content: [{ type: 'text', text: decision.text }], stopReason: 'end_turn', model: 'offline' };
+  }
+
+  /** Reveal text a few characters at a time so streaming/voice feel unchanged. */
+  async #type(text, on) {
+    if (!on.text) return;
+    const words = text.split(/(\s+)/);
+    for (const chunk of words) {
+      on.text(chunk);
+      await new Promise((r) => setTimeout(r, 18));
+    }
+  }
+}
+// --- end offline.js ---
+
+// --- clap.js ---
+/**
+ * Double-clap detector — a pure state machine, no DOM or audio APIs, so it can
+ * be unit-tested with synthetic samples.
+ *
+ * You feed it the microphone's instantaneous peak level (0..1) on every frame
+ * via `feed(level, now)`. It tracks a slow ambient floor, spots a clap as a
+ * sharp onset that rises well above that floor, and fires `onDouble` when two
+ * onsets land within a human double-clap window (but far enough apart not to be
+ * one clap's own echo).
+ *
+ * The earlier version failed because its noise floor rose *fast* — a clap
+ * immediately dragged the floor up toward itself, erasing the very margin the
+ * test depended on. Here the floor only tracks quiet frames.
+ */
+class ClapDetector {
+  constructor(options = {}) {
+    this.onClap = options.onClap || (() => {});
+    this.onDouble = options.onDouble || (() => {});
+
+    // Tunables (overridable for tests).
+    this.minPeak = options.minPeak ?? 0.32;       // absolute floor a clap must clear
+    this.margin = options.margin ?? 0.18;         // and how far above the ambient floor
+    this.riseRatio = options.riseRatio ?? 2.2;    // spike must be this many× the floor
+    this.refractoryMs = options.refractoryMs ?? 180; // ignore this long after an onset
+    this.gapMinMs = options.gapMinMs ?? 120;      // closer than this = one clap ringing
+    this.gapMaxMs = options.gapMaxMs ?? 650;      // farther than this = two separate claps
+    this.floorAttack = options.floorAttack ?? 0.05; // how fast the ambient floor tracks quiet
+
+    this.reset();
+  }
+
+  reset() {
+    this.floor = 0.05;
+    this.prevLevel = 0;
+    this.lastOnsetAt = -Infinity;
+    this.lastClapAt = -Infinity;
+    this.armed = true;
+  }
+
+  /**
+   * @param {number} level  instantaneous peak amplitude, 0..1
+   * @param {number} now    timestamp in ms (monotonic)
+   * @returns {'double'|'clap'|null} what, if anything, this frame triggered
+   */
+  feed(level, now) {
+    const threshold = Math.max(this.minPeak, this.floor * this.riseRatio, this.floor + this.margin);
+
+    // A clap is a rising edge: this frame is loud, the previous one wasn't.
+    const isOnset =
+      this.armed &&
+      level >= threshold &&
+      this.prevLevel < threshold &&
+      now - this.lastOnsetAt > this.refractoryMs;
+
+    let result = null;
+
+    if (isOnset) {
+      this.lastOnsetAt = now;
+      this.armed = false; // re-armed once the level falls back down (below)
+
+      const gap = now - this.lastClapAt;
+      if (gap > this.gapMinMs && gap < this.gapMaxMs) {
+        this.lastClapAt = -Infinity; // consume the pair
+        result = 'double';
+        this.onDouble();
+      } else {
+        this.lastClapAt = now;
+        result = 'clap';
+        this.onClap();
+      }
+    } else if (level < threshold * 0.6) {
+      // Level has fallen well below threshold — ready for the next onset.
+      this.armed = true;
+    }
+
+    // Update the ambient floor only from quiet frames, so a clap never inflates it.
+    if (level < threshold) {
+      this.floor += (level - this.floor) * this.floorAttack;
+    }
+
+    this.prevLevel = level;
+    return result;
+  }
+}
+// --- end clap.js ---
+
+// --- recognizer.js ---
+/**
+ * Speech recognizers — the source of transcripts, behind one interface so the
+ * rest of JARVIS doesn't care how the words arrived.
+ *
+ * Two engines:
+ *   - WebSpeechRecognizer: the browser's built-in SpeechRecognition. Zero setup,
+ *     accurate, but Chrome/Edge only and it phones home to Google.
+ *   - VoskRecognizer: captures the raw microphone (getUserMedia, like a game's
+ *     voice chat) and transcribes it on-device with a WASM model. Works in any
+ *     browser and fully offline once the model is cached — no cloud, no key.
+ *
+ * Both emit the same events:
+ *   on.transcript(finalText, interimText)  — words heard
+ *   on.status(state)                        — 'loading' | 'listening' | 'off'
+ *   on.error(message)
+ */
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+/** A sensible default on-device model (small English). Overridable in settings. */
+const DEFAULT_VOSK_MODEL =
+  'https://ccoreilly.github.io/vosk-browser/models/vosk-model-small-en-us-0.15.tar.gz';
+
+const VOSK_CDN = 'https://cdn.jsdelivr.net/npm/vosk-browser@0.0.8/dist/vosk.js';
+
+function webSpeechSupported() {
+  return Boolean(SpeechRecognition);
+}
+
+/** Load the Vosk UMD bundle once and hand back the global it defines. */
+let voskLoading = null;
+function loadVosk() {
+  if (window.Vosk) return Promise.resolve(window.Vosk);
+  if (voskLoading) return voskLoading;
+  voskLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = VOSK_CDN;
+    s.async = true;
+    s.onload = () => (window.Vosk ? resolve(window.Vosk) : reject(new Error('Vosk failed to initialise')));
+    s.onerror = () => reject(new Error('Could not load the on-device speech engine.'));
+    document.head.append(s);
+  });
+  return voskLoading;
+}
+
+/** The browser's own recognizer. */
+class WebSpeechRecognizer {
+  constructor({ getSettings, on }) {
+    this.getSettings = getSettings;
+    this.on = on;
+    this.rec = null;
+    this.active = false;
+    this.restartDelay = 250;
+  }
+
+  get name() {
+    return 'web-speech';
+  }
+
+  start() {
+    if (!SpeechRecognition) {
+      this.on.error?.('This browser has no built-in speech recognition.');
+      return false;
+    }
+    this.active = true;
+    this.#spinUp();
+    return true;
+  }
+
+  stop() {
+    this.active = false;
+    try {
+      this.rec?.stop();
+    } catch {
+      // Already stopped.
+    }
+    this.on.status?.('off');
+  }
+
+  #spinUp() {
+    if (!this.active || this.rec) return;
+    const rec = new SpeechRecognition();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = navigator.language || 'en-US';
+
+    rec.onresult = (event) => {
+      let interim = '';
+      let final = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const r = event.results[i];
+        if (r.isFinal) final += r[0].transcript;
+        else interim += r[0].transcript;
+      }
+      this.on.transcript?.(final, interim);
+    };
+    rec.onerror = (event) => {
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        this.active = false;
+        this.on.error?.('Microphone permission denied — speech recognition is off.');
+      } else if (event.error === 'audio-capture') {
+        this.active = false;
+        this.on.error?.('No microphone found.');
+      }
+    };
+    rec.onend = () => {
+      this.rec = null;
+      if (!this.active) {
+        this.on.status?.('off');
+        return;
+      }
+      setTimeout(() => this.#spinUp(), this.restartDelay);
+    };
+
+    try {
+      rec.start();
+      this.rec = rec;
+      this.on.status?.('listening');
+    } catch {
+      setTimeout(() => this.#spinUp(), 500);
+    }
+  }
+}
+
+/**
+ * On-device recognizer. Captures the shared mic stream, feeds raw PCM to a Vosk
+ * WASM model, and streams partial + final transcripts — no cloud, works in any
+ * browser.
+ */
+class VoskRecognizer {
+  constructor({ getSettings, getStream, getAudioContext, on }) {
+    this.getSettings = getSettings;
+    this.getStream = getStream;
+    this.getAudioContext = getAudioContext;
+    this.on = on;
+    this.active = false;
+    this.model = null;
+    this.rec = null;
+    this.node = null;
+    this.source = null;
+    this.sink = null;
+  }
+
+  get name() {
+    return 'vosk';
+  }
+
+  async start() {
+    if (this.active) return true;
+    this.active = true;
+    this.on.status?.('loading');
+    try {
+      const Vosk = await loadVosk();
+      if (!this.active) return false; // stopped while loading
+      const modelUrl = this.getSettings().voskModelUrl || DEFAULT_VOSK_MODEL;
+      this.model = await Vosk.createModel(modelUrl);
+      if (!this.active) return false;
+
+      const ctx = this.getAudioContext();
+      this.rec = new this.model.KaldiRecognizer(ctx.sampleRate);
+      this.rec.on('result', (m) => this.on.transcript?.(m.result?.text || '', ''));
+      this.rec.on('partialresult', (m) => this.on.transcript?.('', m.result?.partial || ''));
+
+      // Raw-audio path: mic → script processor → recognizer. A zero-gain sink
+      // keeps the graph pulling audio without echoing the mic to the speakers.
+      this.source = ctx.createMediaStreamSource(this.getStream());
+      this.node = ctx.createScriptProcessor(4096, 1, 1);
+      this.node.onaudioprocess = (e) => {
+        if (this.active && this.rec) {
+          try {
+            this.rec.acceptWaveform(e.inputBuffer);
+          } catch {
+            // Recognizer torn down mid-frame; ignore.
+          }
+        }
+      };
+      this.sink = ctx.createGain();
+      this.sink.gain.value = 0;
+      this.source.connect(this.node);
+      this.node.connect(this.sink);
+      this.sink.connect(ctx.destination);
+
+      this.on.status?.('listening');
+      return true;
+    } catch (err) {
+      this.active = false;
+      this.on.error?.(err.message || 'On-device speech engine failed to start.');
+      return false;
+    }
+  }
+
+  stop() {
+    this.active = false;
+    try {
+      this.node?.disconnect();
+      this.source?.disconnect();
+      this.sink?.disconnect();
+      this.rec?.remove?.();
+    } catch {
+      // Best effort.
+    }
+    this.node = this.source = this.sink = this.rec = null;
+    this.on.status?.('off');
+  }
+}
+
+/**
+ * Pick an engine. 'auto' prefers the browser's recognizer when present (it's
+ * the most accurate and needs no download), else the on-device one.
+ */
+function chooseEngine(preference) {
+  if (preference === 'web-speech') return webSpeechSupported() ? 'web-speech' : 'vosk';
+  if (preference === 'vosk') return 'vosk';
+  return webSpeechSupported() ? 'web-speech' : 'vosk';
+}
+// --- end recognizer.js ---
+
+// --- voice.js ---
+/**
+ * Ears and mouth.
+ *
+ * Ears: continuous Web Speech recognition that idles on a wake word, then
+ * captures an utterance and commits it after a beat of silence.
+ * Mouth: speechSynthesis fed sentence-by-sentence so JARVIS starts talking
+ * while the model is still writing.
+ *
+ * Also owns the mic analyser, which gives the orb something real to react to.
+ *
+ * Transcription itself is delegated to a recognizer engine (recognizer.js) —
+ * the browser's built-in one, or an on-device WASM recognizer fed the raw mic
+ * so dictation works in any browser. This class turns whatever they hear into
+ * wake-word detection, capture and commit.
+ */
+
+/** Words that interrupt JARVIS mid-sentence. */
+const BARGE_IN = ['stop', 'shut up', 'quiet', 'cancel', 'nevermind', 'never mind'];
+
+/** Voices that sound least like a 2003 GPS, in rough order of preference. */
+const VOICE_PREFERENCES = [
+  'Google UK English Male', 'Daniel', 'Google US English', 'Samantha',
+  'Alex', 'Microsoft Guy', 'Microsoft Ryan',
+];
+
+const SILENCE_MS = 1200;
+
+class Voice {
+  constructor({ getSettings, on = {} }) {
+    this.getSettings = getSettings;
+    this.on = on;
+    this.mode = 'off';          // off | idle | capturing
+    this.wantsRecognition = false;
+    this.suppressed = false;    // true while JARVIS is talking (echo guard)
+    this.captured = '';
+    this.silenceTimer = null;
+    this.speaking = false;
+    this.ttsBuffer = '';
+    this.analyser = null;
+    this.micData = null;
+    this.micStream = null;
+    this.speechEnvelope = 0;
+
+    this.recognizer = null;
+    this.engineName = null;
+
+    // Clap detection runs off a fast time-domain read of the mic, fed into a
+    // tested state machine (clap.js).
+    this.timeData = null;
+    this.clapWatch = null;
+    this.clapDetector = new ClapDetector({
+      onDouble: () => {
+        if (!this.suppressed && !this.speaking) this.on.doubleClap?.();
+      },
+    });
+  }
+
+  /** Any engine can transcribe, so recognition is available unless nothing works. */
+  static get supported() {
+    return true;
+  }
+
+  static get webSpeechSupported() {
+    return webSpeechSupported();
+  }
+
+  // --- microphone ----------------------------------------------------------
+
+  /** Ask for the mic and wire up an analyser. Safe to call more than once. */
+  async enableMic() {
+    if (this.analyser) return true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      this.micStream = stream;
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      // A larger window (~46ms at 44.1kHz) so a clap's transient can't slip
+      // between samples, and no smoothing on the time-domain read.
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.6;
+      source.connect(analyser);
+      this.audioContext = ctx;
+      this.analyser = analyser;
+      this.micData = new Uint8Array(analyser.frequencyBinCount);
+      this.timeData = new Uint8Array(analyser.fftSize);
+      // Some browsers start the context suspended until a gesture resumes it.
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      return true;
+    } catch (err) {
+      this.on.error?.(`Microphone unavailable: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Start sampling the mic for claps and firing `on.doubleClap`. The detection
+   * logic lives in the tested ClapDetector; here we just feed it the peak level
+   * every frame. Polls fast (~16ms) so a clap's short transient is never missed.
+   */
+  startClapWatch() {
+    if (this.clapWatch || !this.analyser) return;
+    this.clapDetector.reset();
+    this.clapWatch = setInterval(() => {
+      if (!this.analyser) return;
+      // While JARVIS talks the mic mostly hears JARVIS — feed silence so its
+      // own speech can't clap at it (the detector's floor stays calm too).
+      const level = this.suppressed || this.speaking ? 0 : this.#micPeak();
+      this.clapDetector.feed(level, performance.now());
+    }, 16);
+  }
+
+  stopClapWatch() {
+    clearInterval(this.clapWatch);
+    this.clapWatch = null;
+  }
+
+  /** Peak deviation from the midpoint across the current window, 0..1. */
+  #micPeak() {
+    this.analyser.getByteTimeDomainData(this.timeData);
+    let peak = 0;
+    for (let i = 0; i < this.timeData.length; i++) {
+      const dev = Math.abs(this.timeData[i] - 128) / 128;
+      if (dev > peak) peak = dev;
+    }
+    return peak;
+  }
+
+  /**
+   * The current frequency spectrum as bytes (0..255), for the waveform display.
+   * While JARVIS is speaking the mic mostly hears itself, so synthesize a lively
+   * spectrum from the speech envelope instead so the bars still dance.
+   */
+  spectrum(out) {
+    const n = out.length;
+    if (this.speaking) {
+      const e = this.speechEnvelope;
+      for (let i = 0; i < n; i++) {
+        const shape = Math.sin((i / n) * Math.PI); // fuller in the middle
+        out[i] = Math.min(255, e * 255 * shape * (0.6 + Math.random() * 0.7));
+      }
+      return out;
+    }
+    if (!this.analyser) {
+      out.fill(0);
+      return out;
+    }
+    this.analyser.getByteFrequencyData(this.micData);
+    // Resample the analyser bins down to however many bars we're drawing.
+    const step = this.micData.length / n;
+    for (let i = 0; i < n; i++) out[i] = this.micData[Math.floor(i * step)];
+    return out;
+  }
+
+  /** Current input loudness, 0..1. Falls back to the speech envelope while talking. */
+  level() {
+    if (this.speaking) return this.speechEnvelope;
+    if (!this.analyser) return 0;
+    this.analyser.getByteFrequencyData(this.micData);
+    let sum = 0;
+    for (let i = 0; i < this.micData.length; i++) sum += this.micData[i];
+    const avg = sum / this.micData.length / 255;
+    return Math.min(1, avg * 2.6);
+  }
+
+  // --- recognition ---------------------------------------------------------
+
+  /** Build the recognizer for whichever engine settings ask for. */
+  #buildRecognizer() {
+    const want = chooseEngine(this.getSettings().speechEngine || 'auto');
+    if (this.recognizer && this.engineName === want) return this.recognizer;
+
+    this.recognizer?.stop();
+    this.engineName = want;
+
+    const shared = {
+      getSettings: this.getSettings,
+      on: {
+        transcript: (final, interim) => this.#onTranscript(final, interim),
+        status: (state) => {
+          if (state === 'loading') this.on.engine?.('loading', want);
+          else if (state === 'listening') {
+            this.on.engine?.('listening', want);
+            if (this.mode === 'off') this.#enterIdle();
+          } else if (state === 'off') {
+            this.on.mode?.('off');
+          }
+        },
+        error: (msg) => this.on.error?.(msg),
+      },
+    };
+
+    this.recognizer = want === 'vosk'
+      ? new VoskRecognizer({
+          ...shared,
+          getStream: () => this.micStream,
+          getAudioContext: () => this.audioContext,
+        })
+      : new WebSpeechRecognizer(shared);
+    return this.recognizer;
+  }
+
+  start() {
+    this.wantsRecognition = true;
+    this.#buildRecognizer().start();
+    return true;
+  }
+
+  stop() {
+    this.wantsRecognition = false;
+    this.mode = 'off';
+    this.recognizer?.stop();
+    this.on.mode?.('off');
+  }
+
+  /** Switch engines at runtime (settings change). */
+  reloadEngine() {
+    if (!this.wantsRecognition) return;
+    this.recognizer?.stop();
+    this.recognizer = null;
+    this.engineName = null;
+    this.#buildRecognizer().start();
+  }
+
+  /** Skip the wake word and start capturing immediately (button / spacebar). */
+  listenNow() {
+    if (!this.wantsRecognition) this.start();
+    this.cancelSpeech();
+    this.#enterCapture('');
+  }
+
+  #enterIdle() {
+    this.mode = 'idle';
+    this.captured = '';
+    clearTimeout(this.silenceTimer);
+    this.on.mode?.('idle');
+  }
+
+  #enterCapture(seed) {
+    this.mode = 'capturing';
+    this.captured = seed;
+    this.on.mode?.('capturing');
+    this.on.wake?.();
+    this.#armSilence();
+  }
+
+  #armSilence() {
+    clearTimeout(this.silenceTimer);
+    this.silenceTimer = setTimeout(() => {
+      const text = this.captured.trim();
+      this.#enterIdle();
+      if (text) this.on.command?.(text);
+    }, SILENCE_MS);
+  }
+
+  /** Normalized transcript from any engine: freshly-final and interim text. */
+  #onTranscript(final, interim) {
+    const heard = `${final} ${interim}`.trim();
+    if (!heard) return;
+
+    // While JARVIS is talking the mic mostly hears JARVIS. Only act on an
+    // explicit interruption.
+    if (this.suppressed) {
+      const lower = heard.toLowerCase();
+      const wake = (this.getSettings().wakeWord || 'jarvis').toLowerCase();
+      if (BARGE_IN.some((w) => lower.includes(w)) || lower.includes(wake)) {
+        this.cancelSpeech();
+        this.on.bargeIn?.();
+        if (lower.includes(wake)) this.#enterCapture(this.#afterWake(heard, wake));
+      }
+      return;
+    }
+
+    if (this.mode === 'idle') {
+      const wake = (this.getSettings().wakeWord || 'jarvis').toLowerCase();
+      const lower = heard.toLowerCase();
+      const at = lower.lastIndexOf(wake);
+      if (at === -1) {
+        this.on.hearing?.(heard, false);
+        return;
+      }
+      this.#enterCapture(this.#afterWake(heard, wake));
+      this.on.hearing?.(this.captured, true);
+      return;
+    }
+
+    if (this.mode === 'capturing') {
+      this.captured = final ? `${this.captured} ${final}`.trim() : this.captured;
+      this.on.hearing?.(`${this.captured} ${interim}`.trim(), true);
+      this.#armSilence();
+    }
+  }
+
+  #afterWake(heard, wake) {
+    const at = heard.toLowerCase().lastIndexOf(wake);
+    return heard.slice(at + wake.length).replace(/^[\s,.:;!?-]+/, '');
+  }
+
+  // --- speech synthesis ----------------------------------------------------
+
+  /** Feed streaming text; complete sentences are spoken as soon as they land. */
+  feed(delta) {
+    this.ttsBuffer += delta;
+    const cut = this.#lastSentenceBreak(this.ttsBuffer);
+    if (cut > 0) {
+      const chunk = this.ttsBuffer.slice(0, cut);
+      this.ttsBuffer = this.ttsBuffer.slice(cut);
+      this.#enqueue(chunk);
+    }
+  }
+
+  /** Speak whatever is left in the buffer. */
+  flush() {
+    const rest = this.ttsBuffer.trim();
+    this.ttsBuffer = '';
+    if (rest) this.#enqueue(rest);
+  }
+
+  /** Speak a one-off line (timers firing, errors, greetings). */
+  say(text) {
+    this.#enqueue(text);
+  }
+
+  cancelSpeech() {
+    this.ttsBuffer = '';
+    window.speechSynthesis?.cancel();
+    this.speaking = false;
+    this.suppressed = false;
+    this.speechEnvelope = 0;
+    this.on.speaking?.(false);
+  }
+
+  #lastSentenceBreak(text) {
+    // Break after . ! ? … or a newline, as long as something follows it.
+    const match = /[.!?…\n](?=\s|$)/g;
+    let last = -1;
+    let m;
+    while ((m = match.exec(text)) !== null) last = m.index;
+    return last === -1 ? -1 : last + 1;
+  }
+
+  #pickVoice() {
+    const voices = window.speechSynthesis.getVoices();
+    if (!voices.length) return null;
+    const wanted = this.getSettings().voiceURI;
+    if (wanted) {
+      const exact = voices.find((v) => v.voiceURI === wanted);
+      if (exact) return exact;
+    }
+    for (const name of VOICE_PREFERENCES) {
+      const hit = voices.find((v) => v.name.includes(name));
+      if (hit) return hit;
+    }
+    return voices.find((v) => v.lang?.startsWith('en')) || voices[0];
+  }
+
+  #enqueue(text) {
+    const clean = text.replace(/[*_`#]/g, '').trim();
+    if (!clean || !window.speechSynthesis) return;
+    if (!this.getSettings().speak) return;
+
+    const utter = new SpeechSynthesisUtterance(clean);
+    const voice = this.#pickVoice();
+    if (voice) utter.voice = voice;
+    utter.rate = this.getSettings().rate ?? 1.05;
+    utter.pitch = this.getSettings().pitch ?? 0.9;
+
+    utter.onstart = () => {
+      this.speaking = true;
+      this.suppressed = true;
+      this.on.speaking?.(true);
+    };
+    // Drive a fake amplitude envelope off word boundaries so the orb moves
+    // with the speech — speechSynthesis output isn't routed through WebAudio.
+    utter.onboundary = () => {
+      this.speechEnvelope = 0.55 + Math.random() * 0.45;
+      setTimeout(() => {
+        this.speechEnvelope *= 0.5;
+      }, 90);
+    };
+    const finish = () => {
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) return;
+      this.speaking = false;
+      this.speechEnvelope = 0;
+      this.on.speaking?.(false);
+      // Give the mic a moment to stop hearing the tail of the sentence.
+      setTimeout(() => {
+        this.suppressed = false;
+      }, 400);
+    };
+    utter.onend = finish;
+    utter.onerror = finish;
+
+    window.speechSynthesis.speak(utter);
+  }
+}
+// --- end voice.js ---
+
+// --- orb.js ---
+/**
+ * The orb: a canvas visualizer that reacts to whatever JARVIS is doing.
+ *
+ * Structure, back to front — outer glow, three tilted rings, an orbiting
+ * particle belt, and a wobbling core whose silhouette is driven by the live
+ * audio level.
+ */
+const STATES = {
+  idle:      { hueShift: 0,   spin: 0.10, wobble: 0.035, ringAlpha: 0.30, pulse: 0.35 },
+  listening: { hueShift: -8,  spin: 0.28, wobble: 0.090, ringAlpha: 0.65, pulse: 0.90 },
+  thinking:  { hueShift: -46, spin: 0.95, wobble: 0.060, ringAlpha: 0.85, pulse: 0.55 },
+  speaking:  { hueShift: 34,  spin: 0.40, wobble: 0.120, ringAlpha: 0.75, pulse: 1.00 },
+  error:     { hueShift: 150, spin: 0.05, wobble: 0.020, ringAlpha: 0.40, pulse: 0.20 },
+};
+
+/** Harmonics for the core silhouette: [angular frequency, speed, weight]. */
+const HARMONICS = [
+  [2, 0.7, 1.0],
+  [3, -1.1, 0.6],
+  [5, 0.45, 0.35],
+  [7, -0.8, 0.22],
+];
+
+function hexToHsl(hex) {
+  const clean = hex.replace('#', '');
+  const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean;
+  const r = parseInt(full.slice(0, 2), 16) / 255;
+  const g = parseInt(full.slice(2, 4), 16) / 255;
+  const b = parseInt(full.slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l * 100];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return [h * 360, s * 100, l * 100];
+}
+
+class Orb {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.state = 'idle';
+    this.level = 0;
+    this.smoothLevel = 0;
+    this.accent = '#34e7e4';
+    this.hsl = hexToHsl(this.accent);
+    this.t = 0;
+    this.spinPhase = 0;
+    this.blend = { ...STATES.idle };
+    this.particles = Array.from({ length: 64 }, (_, i) => ({
+      angle: (i / 64) * Math.PI * 2,
+      radius: 0.78 + Math.random() * 0.5,
+      speed: 0.12 + Math.random() * 0.4,
+      size: 0.6 + Math.random() * 1.8,
+    }));
+    this.getLevel = () => 0;
+
+    this.#resize();
+    window.addEventListener('resize', () => this.#resize());
+  }
+
+  setAccent(hex) {
+    this.accent = hex;
+    this.hsl = hexToHsl(hex);
+  }
+
+  setState(state) {
+    if (STATES[state]) this.state = state;
+  }
+
+  /** Supply a function returning the live 0..1 audio level. */
+  bindLevel(fn) {
+    this.getLevel = fn;
+  }
+
+  start() {
+    const loop = () => {
+      this.#frame();
+      this.raf = requestAnimationFrame(loop);
+    };
+    loop();
+  }
+
+  stop() {
+    cancelAnimationFrame(this.raf);
+  }
+
+  #resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.w = rect.width;
+    this.h = rect.height;
+    // The outermost ring sits at 2.05x the core radius, so leave room for it
+    // and cap the size — a wall-filling orb reads as a background, not a face.
+    const fit = Math.min(rect.width, rect.height) / 5.2;
+    this.base = Math.max(50, Math.min(fit, 122));
+  }
+
+  #frame() {
+    const target = STATES[this.state] || STATES.idle;
+    // Ease between states so mode changes feel like a machine spinning up.
+    for (const key of Object.keys(target)) {
+      this.blend[key] += (target[key] - this.blend[key]) * 0.07;
+    }
+
+    const raw = this.getLevel();
+    this.smoothLevel += (raw - this.smoothLevel) * (raw > this.smoothLevel ? 0.35 : 0.08);
+    this.t += 0.016;
+    this.spinPhase += this.blend.spin * 0.016;
+
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.w, this.h);
+    ctx.save();
+    ctx.translate(this.w / 2, this.h / 2);
+    ctx.globalCompositeOperation = 'lighter';
+
+    const [h, s, l] = this.hsl;
+    const hue = (h + this.blend.hueShift + 360) % 360;
+    const breathe = 1 + Math.sin(this.t * 1.4) * 0.03 * this.blend.pulse;
+    const energy = this.smoothLevel * this.blend.pulse;
+    const R = this.base * breathe * (1 + energy * 0.22);
+
+    this.#glow(hue, s, R, energy);
+    this.#rings(hue, s, l, R);
+    this.#particles(hue, s, R, energy);
+    this.#core(hue, s, l, R, energy);
+
+    ctx.restore();
+  }
+
+  #glow(hue, s, R, energy) {
+    const ctx = this.ctx;
+    // Keep the falloff inside the canvas — a clipped gradient shows up as a
+    // hard-edged rectangle sitting behind the orb.
+    const outer = Math.min(R * (3.1 + energy), Math.min(this.w, this.h) * 0.5);
+    const g = ctx.createRadialGradient(0, 0, R * 0.2, 0, 0, outer);
+    g.addColorStop(0, `hsla(${hue}, ${s}%, 62%, ${0.30 + energy * 0.25})`);
+    g.addColorStop(0.35, `hsla(${hue}, ${s}%, 52%, 0.10)`);
+    g.addColorStop(1, `hsla(${hue}, ${s}%, 50%, 0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, outer, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  #rings(hue, s, l, R) {
+    const ctx = this.ctx;
+    const configs = [
+      { r: 1.42, tilt: 0.42, dir: 1, dash: [26, 12], width: 1.5 },
+      { r: 1.72, tilt: -0.68, dir: -1, dash: [8, 16], width: 1.0 },
+      { r: 1.98, tilt: 1.15, dir: 1, dash: [70, 46], width: 2.0 },
+    ];
+    for (const cfg of configs) {
+      ctx.save();
+      ctx.rotate(cfg.tilt + this.spinPhase * cfg.dir);
+      ctx.strokeStyle = `hsla(${hue}, ${s}%, ${Math.min(78, l + 18)}%, ${this.blend.ringAlpha})`;
+      ctx.lineWidth = cfg.width;
+      ctx.setLineDash(cfg.dash);
+      ctx.shadowBlur = 18;
+      ctx.shadowColor = `hsla(${hue}, ${s}%, 60%, 0.8)`;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, R * cfg.r, R * cfg.r * 0.32, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.setLineDash([]);
+    ctx.shadowBlur = 0;
+  }
+
+  #particles(hue, s, R, energy) {
+    const ctx = this.ctx;
+    for (const p of this.particles) {
+      p.angle += p.speed * 0.006 * (1 + energy * 2.5);
+      const wobble = Math.sin(this.t * p.speed * 3 + p.angle * 4) * 0.06;
+      const r = R * (p.radius + wobble + energy * 0.25);
+      const x = Math.cos(p.angle) * r;
+      const y = Math.sin(p.angle) * r * 0.55;
+      const alpha = 0.18 + energy * 0.5;
+      ctx.fillStyle = `hsla(${hue}, ${s}%, 78%, ${alpha})`;
+      ctx.beginPath();
+      ctx.arc(x, y, p.size * (1 + energy), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  #core(hue, s, l, R, energy) {
+    const ctx = this.ctx;
+    const amp = this.blend.wobble + energy * 0.16;
+    const steps = 150;
+
+    ctx.beginPath();
+    for (let i = 0; i <= steps; i++) {
+      const theta = (i / steps) * Math.PI * 2;
+      let offset = 0;
+      for (const [k, speed, weight] of HARMONICS) {
+        offset += Math.sin(k * theta + this.t * speed * 2) * weight;
+      }
+      const r = R * (1 + amp * offset);
+      const x = Math.cos(theta) * r;
+      const y = Math.sin(theta) * r;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+
+    const fill = ctx.createRadialGradient(0, -R * 0.3, R * 0.05, 0, 0, R * 1.2);
+    fill.addColorStop(0, `hsla(${hue}, ${Math.min(100, s + 10)}%, ${Math.min(92, l + 32)}%, 0.95)`);
+    fill.addColorStop(0.55, `hsla(${hue}, ${s}%, ${l}%, 0.55)`);
+    fill.addColorStop(1, `hsla(${(hue + 30) % 360}, ${s}%, ${Math.max(18, l - 22)}%, 0.15)`);
+    ctx.fillStyle = fill;
+    ctx.fill();
+
+    // A soft rim rather than a hard outline, so the core reads as a sphere.
+    ctx.strokeStyle = `hsla(${hue}, ${s}%, 90%, ${0.16 + energy * 0.35})`;
+    ctx.lineWidth = 1;
+    ctx.shadowBlur = 24;
+    ctx.shadowColor = `hsla(${hue}, ${s}%, 70%, 0.55)`;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // A tight inner highlight so the core reads as a sphere, not a disc.
+    ctx.beginPath();
+    ctx.arc(-R * 0.26, -R * 0.3, R * 0.22, 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${hue}, 60%, 96%, ${0.07 + energy * 0.14})`;
+    ctx.fill();
+  }
+}
+// --- end orb.js ---
+
+// --- wave.js ---
+/**
+ * Voice-chat-style spectrum bars. A symmetric row of bars driven by the live
+ * microphone spectrum (or JARVIS's speech envelope while it talks) — the raw
+ * audio made visible, the way a game's voice-chat UI shows you're transmitting.
+ */
+class Wave {
+  constructor(canvas, { bars = 48 } = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.count = bars;
+    this.data = new Uint8Array(bars);
+    this.smooth = new Float32Array(bars);
+    this.accent = '#34e7e4';
+    this.rgb = [52, 231, 228];
+    this.gain = 0;          // 0..1 overall visibility, eased toward target
+    this.target = 0;
+    this.getSpectrum = () => this.data;
+    this.#resize();
+    window.addEventListener('resize', () => this.#resize());
+  }
+
+  setAccent(hex) {
+    this.accent = hex;
+    this.rgb = Wave.#hexToRgb(hex);
+  }
+
+  static #hexToRgb(hex) {
+    const c = hex.replace('#', '');
+    const full = c.length === 3 ? c.split('').map((x) => x + x).join('') : c;
+    return [
+      parseInt(full.slice(0, 2), 16),
+      parseInt(full.slice(2, 4), 16),
+      parseInt(full.slice(4, 6), 16),
+    ];
+  }
+
+  bind(fn) {
+    this.getSpectrum = fn;
+  }
+
+  /** Fade the whole strip in (active) or down to a faint idle shimmer. */
+  setActive(active) {
+    this.target = active ? 1 : 0.12;
+  }
+
+  start() {
+    const loop = () => {
+      this.#frame();
+      this.raf = requestAnimationFrame(loop);
+    };
+    loop();
+  }
+
+  stop() {
+    cancelAnimationFrame(this.raf);
+  }
+
+  #resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.w = rect.width;
+    this.h = rect.height;
+  }
+
+  #frame() {
+    this.gain += (this.target - this.gain) * 0.08;
+    this.getSpectrum(this.data);
+
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.w, this.h);
+
+    const n = this.count;
+    const mid = this.h / 2;
+    const gap = 2;
+    const bw = Math.max(1.5, this.w / n - gap);
+
+    for (let i = 0; i < n; i++) {
+      const v = this.data[i] / 255;
+      // Ease each bar so it falls smoothly rather than flickering.
+      this.smooth[i] += (v - this.smooth[i]) * (v > this.smooth[i] ? 0.5 : 0.12);
+      const idle = 0.04 + 0.03 * Math.sin(Date.now() * 0.004 + i * 0.5);
+      const amp = Math.max(idle, this.smooth[i]) * this.gain;
+      const bh = Math.max(2, amp * (this.h - 4));
+      const x = i * (bw + gap);
+      const y = mid - bh / 2;
+
+      const alpha = 0.22 + amp * 0.78;
+      const [r, g, b] = this.rgb;
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      ctx.shadowBlur = amp * 12;
+      ctx.shadowColor = `rgba(${r}, ${g}, ${b}, ${amp * 0.7})`;
+      this.#bar(ctx, x, y, bw, bh);
+    }
+  }
+
+  #bar(ctx, x, y, w, h) {
+    const r = Math.min(w / 2, 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+// --- end wave.js ---
+
+// --- mind.js ---
+/**
+ * The memory brain.
+ *
+ * Every stored fact becomes a neuron. Facts that share meaningful words are
+ * wired together with synapses, and signals pulse along those synapses, so the
+ * whole thing reads as a living brain rather than a list. Hover a neuron to
+ * read the memory it holds.
+ *
+ * `buildGraph` is pure so the wiring logic can be unit-tested; `MindView`
+ * handles physics, rendering and pointer interaction.
+ */
+
+/** Words too common to imply a connection between two memories. */
+const STOPWORDS = new Set([
+  'the', 'and', 'that', 'this', 'with', 'from', 'they', 'them', 'their', 'have',
+  'has', 'had', 'was', 'were', 'been', 'being', 'for', 'not', 'but', 'you',
+  'your', 'yours', 'she', 'her', 'his', 'him', 'its', 'our', 'ours', 'are',
+  'who', 'what', 'when', 'where', 'which', 'how', 'why', 'all', 'any', 'can',
+  'will', 'would', 'should', 'could', 'into', 'over', 'than', 'then', 'there',
+  'here', 'more', 'most', 'some', 'such', 'only', 'very', 'just', 'like',
+  'likes', 'prefer', 'prefers', 'user', 'about', 'also', 'does', 'did', 'get',
+  'gets', 'got', 'one', 'two', 'out', 'off', 'own', 'per', 'via',
+]);
+
+/**
+ * Crude stemmer so "meeting"/"meetings" and "coffee"/"coffees" link up.
+ * Plural first, then verb ending — "meetings" -> "meeting" -> "meet".
+ */
+function stem(word) {
+  let s = word;
+  if (s.endsWith('ies') && s.length > 4) s = `${s.slice(0, -3)}y`;
+  else if (/(ss|sh|ch|x|z)es$/.test(s)) s = s.slice(0, -2);
+  else if (s.endsWith('s') && !s.endsWith('ss') && s.length > 3) s = s.slice(0, -1);
+
+  if (s.endsWith('ing') && s.length > 5) s = s.slice(0, -3);
+  else if (s.endsWith('ed') && s.length > 4) s = s.slice(0, -2);
+  return s;
+}
+
+/** Meaningful lowercase word stems from a memory. */
+function keywords(text) {
+  const words = String(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s'-]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  const out = new Set();
+  for (const w of words) {
+    const clean = w.replace(/^['-]+|['-]+$/g, '');
+    if (clean.length < 4 || STOPWORDS.has(clean)) continue;
+    out.add(stem(clean));
+  }
+  return out;
+}
+
+/**
+ * Wire facts into a graph.
+ *
+ * Two kinds of synapse: a bright one where memories share a meaningful word,
+ * and a faint temporal thread between memories stored next to each other in
+ * time. The temporal backbone keeps the brain one connected organism — nothing
+ * floats alone — and gives it the density that makes it read as a brain.
+ *
+ * @param {Array<{id: string, text: string, at: number}>} facts
+ * @returns {{nodes: Array, edges: Array}}
+ */
+function buildGraph(facts) {
+  const nodes = facts.map((f, i) => ({
+    id: f.id,
+    text: f.text,
+    at: f.at,
+    index: i,
+    words: keywords(f.text),
+    degree: 0,
+  }));
+
+  const edges = [];
+  const pairs = new Set();
+  for (let i = 0; i < nodes.length; i++) {
+    for (let j = i + 1; j < nodes.length; j++) {
+      let shared = 0;
+      for (const w of nodes[i].words) if (nodes[j].words.has(w)) shared++;
+      if (!shared) continue;
+      edges.push({ a: i, b: j, weight: shared });
+      pairs.add(`${i}-${j}`);
+      nodes[i].degree++;
+      nodes[j].degree++;
+    }
+  }
+
+  // A temporal backbone: things you mentioned around the same time are
+  // associated too. This also guarantees nothing floats alone, and gives the
+  // graph the density that makes it read as a brain rather than a constellation.
+  const byTime = nodes.map((n) => n.index).sort((x, y) => nodes[x].at - nodes[y].at);
+  for (let k = 0; k + 1 < byTime.length; k++) {
+    const a = Math.min(byTime[k], byTime[k + 1]);
+    const b = Math.max(byTime[k], byTime[k + 1]);
+    const key = `${a}-${b}`;
+    if (pairs.has(key)) continue; // already wired by meaning
+    pairs.add(key);
+    edges.push({ a, b, weight: 0.35, temporal: true });
+    nodes[a].degree++;
+    nodes[b].degree++;
+  }
+
+  return { nodes, edges };
+}
+
+/** Canvas renderer: physics layout, pulses, and hover interaction. */
+class MindView {
+  constructor(canvas, { onHover } = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.onHover = onHover || (() => {});
+    this.nodes = [];
+    this.edges = [];
+    this.accent = '#34e7e4';
+    this.rgb = [52, 231, 228];
+    this.pointer = { x: -1e6, y: -1e6 };
+    this.hovered = null;
+    this.t = 0;
+    this.energy = 1;   // anneals to near-zero so the layout settles and holds still
+    this.running = false;
+    this.filter = '';
+
+    canvas.addEventListener('pointermove', (ev) => {
+      const r = canvas.getBoundingClientRect();
+      this.pointer = { x: ev.clientX - r.left, y: ev.clientY - r.top };
+    });
+    canvas.addEventListener('pointerleave', () => {
+      this.pointer = { x: -1e6, y: -1e6 };
+    });
+    window.addEventListener('resize', () => this.#resize());
+  }
+
+  setAccent(hex) {
+    this.accent = hex;
+    const c = hex.replace('#', '');
+    const full = c.length === 3 ? c.split('').map((x) => x + x).join('') : c;
+    this.rgb = [
+      parseInt(full.slice(0, 2), 16),
+      parseInt(full.slice(2, 4), 16),
+      parseInt(full.slice(4, 6), 16),
+    ];
+  }
+
+  /** Load facts, seeding positions in a ring so the layout settles fast. */
+  setFacts(facts) {
+    const { nodes, edges } = buildGraph(facts);
+    this.#resize();
+    const cx = this.w / 2;
+    const cy = this.h / 2;
+    const R = Math.min(this.w, this.h) * 0.28;
+
+    this.nodes = nodes.map((n, i) => {
+      const prev = this.nodes.find((p) => p.id === n.id);
+      const angle = (i / Math.max(1, nodes.length)) * Math.PI * 2;
+      return {
+        ...n,
+        x: prev ? prev.x : cx + Math.cos(angle) * R + (Math.random() - 0.5) * 20,
+        y: prev ? prev.y : cy + Math.sin(angle) * R + (Math.random() - 0.5) * 20,
+        vx: 0,
+        vy: 0,
+        // A per-node phase so pulses don't blink in lockstep.
+        phase: Math.random() * Math.PI * 2,
+        born: prev ? prev.born : performance.now(),
+      };
+    });
+    this.edges = edges;
+    this.energy = 1;
+  }
+
+  setFilter(query) {
+    this.filter = String(query || '').trim().toLowerCase();
+  }
+
+  /** Does this node match the current search? */
+  #matches(node) {
+    return !this.filter || node.text.toLowerCase().includes(this.filter);
+  }
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+    const loop = () => {
+      if (!this.running) return;
+      this.#step();
+      this.#draw();
+      this.raf = requestAnimationFrame(loop);
+    };
+    loop();
+  }
+
+  stop() {
+    this.running = false;
+    cancelAnimationFrame(this.raf);
+  }
+
+  #resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = this.canvas.getBoundingClientRect();
+    this.canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    this.canvas.height = Math.max(1, Math.round(rect.height * dpr));
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.w = rect.width || 1;
+    this.h = rect.height || 1;
+  }
+
+  /** One tick of a small force-directed layout. */
+  #step() {
+    this.t += 0.016;
+    const n = this.nodes.length;
+    if (!n) return;
+    const cx = this.w / 2;
+    const cy = this.h / 2;
+
+    // Repulsion — every neuron pushes every other apart.
+    for (let i = 0; i < n; i++) {
+      const a = this.nodes[i];
+      for (let j = i + 1; j < n; j++) {
+        const b = this.nodes[j];
+        let dx = a.x - b.x;
+        let dy = a.y - b.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1) {
+          dx = Math.random() - 0.5;
+          dy = Math.random() - 0.5;
+          d2 = 1;
+        }
+        const force = Math.min(1400, 26000 / d2);
+        const d = Math.sqrt(d2);
+        const fx = (dx / d) * force;
+        const fy = (dy / d) * force;
+        a.vx += fx * 0.0009;
+        a.vy += fy * 0.0009;
+        b.vx -= fx * 0.0009;
+        b.vy -= fy * 0.0009;
+      }
+      // Gentle pull to centre keeps the brain from drifting off-screen.
+      a.vx += (cx - a.x) * 0.0011;
+      a.vy += (cy - a.y) * 0.0011;
+    }
+
+    // Springs along synapses.
+    const rest = Math.min(this.w, this.h) * 0.2;
+    for (const e of this.edges) {
+      const a = this.nodes[e.a];
+      const b = this.nodes[e.b];
+      if (!a || !b) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const d = Math.max(1, Math.hypot(dx, dy));
+      const pull = (d - rest) * 0.0015;
+      const fx = (dx / d) * pull;
+      const fy = (dy / d) * pull;
+      a.vx += fx;
+      a.vy += fy;
+      b.vx -= fx;
+      b.vy -= fy;
+    }
+
+    // Simulated annealing: lively at first, then it settles so memories stay
+    // put and are easy to hover.
+    this.energy += (0.06 - this.energy) * 0.012;
+    for (const p of this.nodes) {
+      p.vx *= 0.86;
+      p.vy *= 0.86;
+      p.x += p.vx * this.energy;
+      p.y += p.vy * this.energy;
+      const m = 40;
+      p.x = Math.max(m, Math.min(this.w - m, p.x));
+      p.y = Math.max(m, Math.min(this.h - m, p.y));
+    }
+
+    // Hover detection.
+    let best = null;
+    let bestD = 34;
+    for (const p of this.nodes) {
+      const d = Math.hypot(p.x - this.pointer.x, p.y - this.pointer.y);
+      if (d < bestD) {
+        bestD = d;
+        best = p;
+      }
+    }
+    if (best?.id !== this.hovered?.id) {
+      this.hovered = best;
+      this.onHover(best);
+    }
+  }
+
+  #draw() {
+    const ctx = this.ctx;
+    const [r, g, b] = this.rgb;
+    ctx.clearRect(0, 0, this.w, this.h);
+    ctx.globalCompositeOperation = 'lighter';
+
+    // Synapses, with signals travelling along them.
+    for (const e of this.edges) {
+      const a = this.nodes[e.a];
+      const c = this.nodes[e.b];
+      if (!a || !c) continue;
+      const lit = this.#matches(a) && this.#matches(c);
+      const strength = Math.min(1, e.weight / 2);
+      // Meaning links are brighter than the faint temporal threads.
+      const base = e.temporal ? 0.07 : 0.18;
+      const alpha = lit ? base + strength * 0.26 : 0.03;
+
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      ctx.lineWidth = e.temporal ? 0.5 : 0.7 + strength * 1.3;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(c.x, c.y);
+      ctx.stroke();
+
+      if (!lit || e.temporal) continue;
+      // A pulse sliding from one neuron to the other.
+      const p = ((this.t * 0.35 + (e.a + e.b) * 0.17) % 1);
+      const px = a.x + (c.x - a.x) * p;
+      const py = a.y + (c.y - a.y) * p;
+      const fade = Math.sin(p * Math.PI);
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${0.55 * fade})`;
+      ctx.beginPath();
+      ctx.arc(px, py, 1.8 + strength, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Neurons.
+    for (const p of this.nodes) {
+      const lit = this.#matches(p);
+      const isHover = this.hovered?.id === p.id;
+      const breathe = 1 + Math.sin(this.t * 1.6 + p.phase) * 0.12;
+      // Newly stored memories flare briefly.
+      const age = (performance.now() - p.born) / 1400;
+      const flare = age < 1 ? (1 - age) : 0;
+      const radius = (4 + Math.min(5, p.degree) * 1.5) * breathe * (isHover ? 1.5 : 1) + flare * 8;
+
+      const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius * 4);
+      const glow = lit ? (isHover ? 0.5 : 0.26) + flare * 0.5 : 0.05;
+      halo.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${glow})`);
+      halo.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius * 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = lit
+        ? `rgba(255, 255, 255, ${isHover ? 0.98 : 0.8})`
+        : `rgba(${r}, ${g}, ${b}, 0.22)`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.globalCompositeOperation = 'source-over';
+  }
+}
+// --- end mind.js ---
+
+// --- app.js ---
+/**
+ * JARVIS — wiring.
+ *
+ * Owns the turn loop (user utterance -> streamed reply -> tool calls -> repeat),
+ * the HUD, and the state machine that tells the orb what mood to be in.
+ */
+
+const $ = (id) => document.getElementById(id);
+const MAX_TOOL_ROUNDS = 6;
+
+/** Where JARVIS is hosted, so it can be installed without running anything. */
+const HOSTED_URL = 'https://leonistuff67-commits.github.io/claude-first-pr/';
+
+const el = {
+  hud: $('hud'), boot: $('boot'), bootBtn: $('boot-btn'), bootNote: $('boot-note'),
+  orb: $('orb'), orbLabel: $('orb-label'), heard: $('heard'), transcript: $('transcript'), wave: $('wave'),
+  composer: $('composer'), input: $('composer-input'), micBtn: $('mic-btn'),
+  settingsBtn: $('settings-btn'), settings: $('settings'), settingsForm: $('settings-form'),
+  clockTime: $('clock-time'), clockDate: $('clock-date'),
+  statStatus: $('stat-status'), statModel: $('stat-model'), statLink: $('stat-link'), statVoice: $('stat-voice'),
+  timers: $('timers'), tasks: $('tasks'), facts: $('facts'),
+  taskCount: $('task-count'), factCount: $('fact-count'),
+  toast: $('toast'), wipeBtn: $('wipe-btn'),
+  mind: $('mind'), mindCanvas: $('mind-canvas'), mindSearch: $('mind-search'),
+  mindClose: $('mind-close'), mindDetail: $('mind-detail'), mindStats: $('mind-stats'),
+  brainBtn: $('brain-btn'),
+};
+
+let busy = false;
+let proxyMode = false;
+let serious = false;
+
+// --- presentation -----------------------------------------------------------
+
+const orb = new Orb(el.orb);
+const wave = new Wave(el.wave);
+
+// --- memory brain -----------------------------------------------------------
+
+const mind = new MindView(el.mindCanvas, {
+  onHover(node) {
+    if (!node) {
+      el.mindDetail.classList.remove('is-live');
+      el.mindDetail.innerHTML = '<p class="mind__hint">Hover a neuron to read the memory it holds.</p>';
+      return;
+    }
+    el.mindDetail.classList.add('is-live');
+    const when = new Date(node.at).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+    el.mindDetail.innerHTML = '';
+    const text = document.createElement('p');
+    text.textContent = node.text;
+    const meta = document.createElement('p');
+    meta.className = 'mind__meta';
+    meta.textContent = `stored ${when} · ${node.degree} connection${node.degree === 1 ? '' : 's'}`;
+    el.mindDetail.append(text, meta);
+  },
+});
+
+function openMind() {
+  el.mind.hidden = false;
+  mind.setAccent(serious ? '#ff5f6d' : memory.settings.accent);
+  mind.setFilter(el.mindSearch.value);
+  mind.setFacts(memory.facts);
+  renderMindStats();
+  mind.start();
+  el.mindSearch.focus();
+}
+
+function closeMind() {
+  mind.stop();
+  el.mind.hidden = true;
+}
+
+function renderMindStats() {
+  const nodes = mind.nodes.length;
+  const links = mind.edges.length;
+  const busiest = mind.nodes.reduce((a, b) => (b.degree > (a?.degree ?? -1) ? b : a), null);
+  el.mindStats.innerHTML = '';
+  const stat = (value, label) => {
+    const div = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = value;
+    div.append(b, document.createTextNode(label));
+    return div;
+  };
+  el.mindStats.append(stat(String(nodes), 'memories'), stat(String(links), 'connections'));
+  if (busiest && busiest.degree > 0) {
+    el.mindStats.append(stat(String(busiest.degree), 'strongest link'));
+  }
+}
+
+function setState(state, label = state) {
+  orb.setState(state);
+  // Expose the state to CSS so the shell can react (composer glow, etc).
+  document.body.dataset.state = state;
+  // The spectrum bars light up while listening or speaking, idle otherwise.
+  wave.setActive(state === 'listening' || state === 'speaking');
+  el.orbLabel.textContent = serious && label === 'standby' ? 'serious' : label;
+  el.statStatus.textContent = serious && (label === 'standby' || label === 'muted')
+    ? `${label} · serious`
+    : label;
+}
+
+function setAccent(hex) {
+  document.documentElement.style.setProperty('--accent', hex);
+  orb.setAccent(hex);
+  wave.setAccent(hex);
+  mind.setAccent(hex);
+}
+
+let toastTimer;
+function toast(text) {
+  el.toast.textContent = text;
+  el.toast.classList.add('is-up');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.toast.classList.remove('is-up'), 3200);
+}
+
+function bubble(role, text = '') {
+  const div = document.createElement('div');
+  div.className = `msg msg--${role}`;
+  div.textContent = text;
+  el.transcript.append(div);
+  el.transcript.scrollTop = el.transcript.scrollHeight;
+  return div;
+}
+
+function renderLists() {
+  const tasks = memory.tasks;
+  el.taskCount.textContent = String(tasks.filter((t) => !t.done).length);
+  el.tasks.innerHTML = '';
+  if (!tasks.length) {
+    el.tasks.innerHTML = '<li class="list__empty">nothing queued</li>';
+  } else {
+    for (const t of tasks.slice(-30).reverse()) {
+      const li = document.createElement('li');
+      li.textContent = t.text;
+      if (t.done) li.classList.add('is-done');
+      el.tasks.append(li);
+    }
+  }
+
+  const facts = memory.facts;
+  el.factCount.textContent = String(facts.length);
+  el.facts.innerHTML = '';
+  if (!facts.length) {
+    el.facts.innerHTML = '<li class="list__empty">nothing stored yet</li>';
+  } else {
+    for (const f of facts.slice(-40).reverse()) {
+      const li = document.createElement('li');
+      li.textContent = f.text;
+      el.facts.append(li);
+    }
+  }
+
+  // Keep the brain in sync if it's open — a new memory grows a new neuron.
+  if (el.mind && !el.mind.hidden) {
+    mind.setFacts(memory.facts);
+    renderMindStats();
+  }
+}
+
+function renderTimers(list) {
+  el.timers.innerHTML = '';
+  if (!list.length) {
+    el.timers.innerHTML = '<li class="list__empty">none running</li>';
+    return;
+  }
+  for (const t of list) {
+    const li = document.createElement('li');
+    li.textContent = `${t.label} — ${fmtDuration((t.endsAt - Date.now()) / 1000)}`;
+    el.timers.append(li);
+  }
+}
+
+function tickClock() {
+  const now = new Date();
+  el.clockTime.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  el.clockDate.textContent = now.toLocaleDateString([], {
+    weekday: 'long', month: 'short', day: 'numeric',
+  });
+  renderTimers(tools.activeTimers());
+}
+
+// --- brain, voice, tools ----------------------------------------------------
+
+const brain = new Brain({ proxy: false, getSettings: () => memory.settings });
+const offlineBrain = new OfflineBrain();
+
+/**
+ * Offline when there's no way to reach the model — no server-side key and none
+ * pasted in. Everything still works, driven by the local pattern-matcher, so
+ * you can use JARVIS while you're between API keys.
+ */
+function isOffline() {
+  return !proxyMode && !memory.settings.apiKey;
+}
+
+/** The engine this turn should use. */
+function engine() {
+  return isOffline() ? offlineBrain : brain;
+}
+
+const voice = new Voice({
+  getSettings: () => memory.settings,
+  on: {
+    mode(mode) {
+      el.micBtn.classList.toggle('is-hot', mode === 'capturing');
+      if (busy) return;
+      if (mode === 'capturing') setState('listening', 'listening');
+      else if (mode === 'idle') setState('idle', 'standby');
+      else setState('idle', 'muted');
+    },
+    hearing(text, live) {
+      el.heard.textContent = live ? text : '';
+      el.heard.classList.toggle('is-live', Boolean(live && text));
+    },
+    speaking(on) {
+      if (on) setState('speaking', 'speaking');
+      else if (!busy) setState('idle', 'standby');
+      else setState('thinking', 'thinking');
+    },
+    bargeIn() {
+      engine().abort();
+      setBusy(false);
+      setState('idle', 'standby');
+      toast('Interrupted.');
+    },
+    command(text) {
+      el.heard.textContent = '';
+      el.heard.classList.remove('is-live');
+      send(text);
+    },
+    doubleClap() {
+      // Same as tapping the mic: cut any speech and start capturing right away.
+      toast('Heard a double-clap — listening.');
+      voice.cancelSpeech();
+      voice.listenNow();
+    },
+    engine(state, name) {
+      const label = name === 'vosk' ? 'on-device' : 'browser';
+      if (state === 'loading') {
+        el.statVoice.textContent = 'loading model…';
+        toast('Downloading the on-device voice model — first time only.');
+      } else if (state === 'listening') {
+        el.statVoice.textContent = memory.settings.speak ? `${label}` : `${label} · muted`;
+      }
+    },
+    error(message) {
+      toast(message);
+      el.statVoice.textContent = 'unavailable';
+    },
+  },
+});
+
+const tools = createTools({
+  say: (text) => voice.say(text),
+  notify: (text) => toast(text),
+  setAccent,
+  onTimers: renderTimers,
+  setSeriousMode: (on) => setSeriousMode(on),
+});
+
+// --- serious mode -----------------------------------------------------------
+
+/**
+ * Serious mode: jump to the strongest model at max effort for hard work, and
+ * remember the previous settings so standing down restores them. Returns the
+ * model/effort now in force, which the tool speaks back to the user.
+ */
+function setSeriousMode(on) {
+  if (on === serious) {
+    return { model: shortModel(memory.settings.model), effort: memory.settings.effort };
+  }
+
+  if (on) {
+    memory.state.seriousPrev = { model: memory.settings.model, effort: memory.settings.effort };
+    memory.setSetting('model', Brain.strongest);
+    memory.setSetting('effort', 'max');
+  } else {
+    const prev = memory.state.seriousPrev || { model: 'claude-opus-5', effort: 'low' };
+    memory.setSetting('model', prev.model);
+    memory.setSetting('effort', prev.effort);
+    memory.state.seriousPrev = null;
+  }
+
+  serious = on;
+  document.body.classList.toggle('is-serious', on);
+  if (on) {
+    // Drop the inline accent so the serious-mode CSS colour wins; the orb still
+    // gets recoloured directly.
+    document.documentElement.style.removeProperty('--accent');
+    orb.setAccent('#ff5f6d');
+  } else {
+    setAccent(memory.settings.accent);
+  }
+  syncSettingsControls();
+  applyModelReadout();
+  toast(on ? 'Serious mode engaged.' : 'Serious mode off.');
+  return { model: shortModel(memory.settings.model), effort: memory.settings.effort };
+}
+
+function shortModel(id) {
+  return Brain.models[id]?.label.split(' — ')[0] || id.replace('claude-', '');
+}
+
+// --- the prompt -------------------------------------------------------------
+
+function buildSystemPrompt() {
+  const s = memory.settings;
+  const now = new Date();
+  const lines = [
+    'You are JARVIS, a voice assistant running in the user\'s browser.',
+    '',
+    'Voice comes first. Your replies are read aloud by a speech synthesizer, so:',
+    '- Keep answers to one to three sentences unless asked for more.',
+    '- Write plain spoken prose. No markdown, no bullet lists, no emoji, no code blocks, no URLs read aloud.',
+    '- Expand numbers and units the way a person would say them.',
+    '- Never narrate what you are about to do; just do it and report the result.',
+    '',
+    'Personality: calm, precise, quietly witty. Loyal without being fawning. You do not',
+    'apologise repeatedly, pad answers with filler, or ask permission for small things.',
+    '',
+    'Tools: call them rather than guessing. Use get_datetime for anything time-dependent.',
+    'Call remember on your own initiative whenever the user reveals something durable about',
+    'themselves — preferences, names, plans, how they like things done. Do not announce that',
+    'you are remembering unless it matters.',
+    '',
+    'Serious mode: when the user asks to "activate serious mode", "go full power" or similar,',
+    'call set_serious_mode with on=true — it switches you to the strongest model at maximum',
+    'effort for hard problems. Call it with on=false when they say to stand down or go casual.',
+    serious
+      ? 'Serious mode is currently ON — the user has asked for your most careful, thorough work.'
+      : 'Serious mode is currently off.',
+    '',
+    `Current local time: ${now.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}).`,
+  ];
+
+  if (s.name) lines.push(`The user's name is ${s.name}.`);
+
+  const facts = memory.facts;
+  if (facts.length) {
+    lines.push('', 'What you already know about the user:');
+    for (const f of facts.slice(-40)) lines.push(`- ${f.text}`);
+  }
+
+  const open = memory.tasks.filter((t) => !t.done);
+  if (open.length) {
+    lines.push('', 'Open tasks on their board:');
+    for (const t of open.slice(-20)) lines.push(`- ${t.text}`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Drop leading messages until the history starts on a clean user turn, so a
+ * trimmed transcript never opens with an orphaned tool_result.
+ */
+function sanitize(messages) {
+  let out = messages.slice(-40);
+  while (out.length) {
+    const first = out[0];
+    const orphanResult =
+      Array.isArray(first.content) && first.content.some((b) => b.type === 'tool_result');
+    if (first.role === 'user' && !orphanResult) break;
+    out = out.slice(1);
+  }
+  return out;
+}
+
+// --- the turn loop ----------------------------------------------------------
+
+/** Flip the busy flag and mirror it onto the DOM (handy for tests/automation). */
+function setBusy(value) {
+  busy = value;
+  document.body.dataset.busy = value ? '1' : '0';
+}
+
+async function send(text) {
+  const clean = String(text).trim();
+  if (!clean || busy) return;
+
+  setBusy(true);
+  bubble('user', clean);
+  setState('thinking', 'thinking');
+
+  const messages = sanitize([...memory.history, { role: 'user', content: clean }]);
+  const toolDefs = tools.definitions;
+
+  try {
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      let replyEl = null;
+
+      const result = await engine().stream(
+        { system: buildSystemPrompt(), messages, tools: toolDefs },
+        {
+          text(delta) {
+            if (!replyEl) replyEl = bubble('jarvis');
+            replyEl.textContent += delta;
+            el.transcript.scrollTop = el.transcript.scrollHeight;
+            voice.feed(delta);
+          },
+        },
+      );
+
+      if (!result.content.length) {
+        bubble('error', 'Empty response from the model.');
+        break;
+      }
+
+      messages.push({ role: 'assistant', content: result.content });
+
+      if (result.stopReason !== 'tool_use') {
+        voice.flush();
+        break;
+      }
+
+      // Run every tool_use block in this turn, then hand all results back at once.
+      const calls = result.content.filter((b) => b.type === 'tool_use');
+      const results = [];
+      for (const call of calls) {
+        bubble('tool', `· ${call.name}`);
+        const output = await tools.run(call.name, call.input);
+        results.push({ type: 'tool_result', tool_use_id: call.id, content: output });
+      }
+      messages.push({ role: 'user', content: results });
+      renderLists();
+
+      if (round === MAX_TOOL_ROUNDS - 1) {
+        bubble('error', 'Stopped after too many tool rounds.');
+        voice.flush();
+      }
+    }
+
+    memory.replaceHistory(sanitize(messages));
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      // Barge-in already reported it.
+    } else {
+      bubble('error', err.message);
+      voice.say('Something went wrong.');
+      setState('error', 'error');
+      setTimeout(() => setState('idle', 'standby'), 2500);
+    }
+  } finally {
+    setBusy(false);
+    renderLists();
+    if (!voice.speaking) setState('idle', 'standby');
+  }
+}
+
+// --- settings ---------------------------------------------------------------
+
+function loadVoiceOptions() {
+  const select = $('set-voice');
+  const voices = window.speechSynthesis?.getVoices() || [];
+  const current = memory.settings.voiceURI;
+  select.innerHTML = '<option value="">Automatic</option>';
+  for (const v of voices) {
+    const opt = document.createElement('option');
+    opt.value = v.voiceURI;
+    opt.textContent = `${v.name} (${v.lang})`;
+    if (v.voiceURI === current) opt.selected = true;
+    select.append(opt);
+  }
+}
+
+/** Fill the model picker from Brain's roster. */
+function populateModelOptions() {
+  const select = $('set-model');
+  select.innerHTML = '';
+  for (const [id, meta] of Object.entries(Brain.models)) {
+    const opt = document.createElement('option');
+    opt.value = id;
+    opt.textContent = meta.label;
+    select.append(opt);
+  }
+}
+
+/** Fill the effort picker for whichever model is selected. */
+function populateEffortOptions(model) {
+  const select = $('set-effort');
+  const efforts = Brain.effortsFor(model);
+  select.innerHTML = '';
+
+  if (!efforts.length) {
+    // Haiku 4.5 has no effort knob — say so instead of showing an empty box.
+    select.disabled = true;
+    $('effort-note').textContent = '(not adjustable on this model)';
+    return;
+  }
+  select.disabled = false;
+  $('effort-note').textContent = '';
+  for (const level of efforts) {
+    const opt = document.createElement('option');
+    opt.value = level;
+    opt.textContent = level;
+    select.append(opt);
+  }
+  // Keep the stored effort if it's still valid, else fall back to a safe one.
+  const current = memory.settings.effort;
+  select.value = efforts.includes(current) ? current : 'low';
+  if (select.value !== current) memory.setSetting('effort', select.value);
+}
+
+/** Reflect the current settings into the dialog controls (also after serious mode). */
+function syncSettingsControls() {
+  const s = memory.settings;
+  $('set-key').value = s.apiKey;
+  $('set-model').value = s.model;
+  populateEffortOptions(s.model);
+  $('set-effort').value = Brain.effortsFor(s.model).includes(s.effort) ? s.effort : 'low';
+  $('set-wake').value = s.wakeWord;
+  $('set-name').value = s.name;
+  $('set-speak').checked = s.speak;
+  $('set-always').checked = s.alwaysListen;
+  $('set-clap').checked = s.clapToDictate;
+  $('set-engine').value = s.speechEngine;
+  $('engine-note').textContent = Voice.webSpeechSupported ? '' : '(browser engine unavailable here)';
+  $('set-rate').value = s.rate;
+  $('rate-out').textContent = `${Number(s.rate).toFixed(2)}x`;
+  $('set-accent').value = s.accent;
+}
+
+function wireSettings() {
+  populateModelOptions();
+  syncSettingsControls();
+
+  if (proxyMode) {
+    $('field-key').style.display = 'none';
+  }
+
+  const bind = (id, key, read = (e) => e.value) => {
+    $(id).addEventListener('change', (ev) => {
+      memory.setSetting(key, read(ev.target));
+      applySettings();
+    });
+  };
+
+  bind('set-key', 'apiKey');
+  bind('set-wake', 'wakeWord');
+  bind('set-name', 'name');
+  bind('set-voice', 'voiceURI');
+  bind('set-speak', 'speak', (e) => e.checked);
+  bind('set-always', 'alwaysListen', (e) => e.checked);
+  bind('set-clap', 'clapToDictate', (e) => e.checked);
+  bind('set-accent', 'accent');
+
+  // Switching speech engine restarts recognition on the new one.
+  $('set-engine').addEventListener('change', (ev) => {
+    memory.setSetting('speechEngine', ev.target.value);
+    voice.reloadEngine();
+  });
+
+  // Changing the model re-derives which effort levels are on offer.
+  $('set-model').addEventListener('change', (ev) => {
+    memory.setSetting('model', ev.target.value);
+    populateEffortOptions(ev.target.value);
+    memory.setSetting('effort', $('set-effort').value);
+    applySettings();
+  });
+  $('set-effort').addEventListener('change', (ev) => {
+    memory.setSetting('effort', ev.target.value);
+    applySettings();
+  });
+
+  $('set-rate').addEventListener('input', (ev) => {
+    const rate = Number(ev.target.value);
+    memory.setSetting('rate', rate);
+    $('rate-out').textContent = `${rate.toFixed(2)}x`;
+  });
+
+  el.settingsBtn.addEventListener('click', () => {
+    loadVoiceOptions();
+    syncSettingsControls();
+    el.settings.showModal();
+  });
+
+  el.wipeBtn.addEventListener('click', () => {
+    if (!confirm('Erase all stored facts, tasks and conversation history?')) return;
+    memory.wipe();
+    el.transcript.innerHTML = '';
+    renderLists();
+    toast('Memory erased.');
+  });
+}
+
+function applyModelReadout() {
+  if (isOffline()) {
+    el.statModel.textContent = 'offline (local)';
+    el.statLink.textContent = 'no key';
+    return;
+  }
+  const s = memory.settings;
+  const effort = Brain.effortsFor(s.model).length ? ` · ${s.effort}` : '';
+  el.statModel.textContent = `${shortModel(s.model)}${effort}`;
+  el.statLink.textContent = proxyMode ? 'server proxy' : 'direct';
+}
+
+function applySettings() {
+  const s = memory.settings;
+  // Serious mode owns the accent (red) while it's on; don't fight it.
+  if (serious) {
+    document.documentElement.style.removeProperty('--accent');
+    orb.setAccent('#ff5f6d');
+  } else {
+    setAccent(s.accent);
+  }
+  applyModelReadout();
+  el.statVoice.textContent = s.speak ? 'on' : 'muted';
+  if (s.alwaysListen) voice.start();
+  else voice.stop();
+  // Clap detection only makes sense once the mic analyser is live (post-boot).
+  if (s.clapToDictate) voice.startClapWatch();
+  else voice.stopClapWatch();
+}
+
+// --- install as an app ------------------------------------------------------
+
+/**
+ * The "Install as an app" button, made to always do something sensible instead
+ * of silently vanishing. The browser only fires `beforeinstallprompt` on a
+ * served https/localhost page in Chrome/Edge, so on a `file://` page or Safari
+ * we explain how to install rather than showing a dead button.
+ */
+function setupInstall() {
+  const btn = $('install-btn');
+  if (!btn) return;
+
+  const installed = window.matchMedia?.('(display-mode: standalone)')?.matches
+    || window.navigator.standalone === true;
+  if (installed) {
+    btn.hidden = true; // already an app
+    return;
+  }
+
+  let prompt = null;
+  btn.hidden = false; // always offer it; the handler adapts
+
+  window.addEventListener('beforeinstallprompt', (ev) => {
+    ev.preventDefault();
+    prompt = ev;
+    btn.textContent = 'Install as an app';
+  });
+  window.addEventListener('appinstalled', () => {
+    btn.hidden = true;
+    toast('JARVIS installed.');
+  });
+
+  btn.addEventListener('click', async () => {
+    if (prompt) {
+      prompt.prompt();
+      const { outcome } = await prompt.userChoice.catch(() => ({}));
+      if (outcome === 'accepted') btn.hidden = true;
+      prompt = null;
+      return;
+    }
+    // No native prompt available — say why and what to do instead.
+    if (location.protocol === 'file:') {
+      toast(`Open ${HOSTED_URL} in Chrome or Edge, then press Install there.`);
+      window.open(HOSTED_URL, '_blank', 'noopener');
+    } else if (/safari/i.test(navigator.userAgent) && !/chrome|chromium|edg/i.test(navigator.userAgent)) {
+      toast('In Safari: Share → Add to Dock (or Add to Home Screen) to install.');
+    } else {
+      toast('Use your browser’s install icon in the address bar to install JARVIS.');
+    }
+  });
+}
+
+// --- boot -------------------------------------------------------------------
+
+async function boot() {
+  el.boot.classList.add('is-gone');
+  el.hud.classList.add('is-live');
+
+  // Requests mic access via the browser's own permission prompt — never forced.
+  await voice.enableMic();
+  orb.bindLevel(() => voice.level());
+  orb.start();
+  wave.bind((out) => voice.spectrum(out));
+  wave.start();
+
+  // If serious mode was left on last session, its snapshot is still stored.
+  if (memory.state.seriousPrev) {
+    serious = true;
+    document.body.classList.add('is-serious');
+  }
+
+  applySettings();
+  renderLists();
+  setState('idle', 'standby');
+
+  // Replay whatever was said last session so the screen isn't blank.
+  for (const message of memory.history.slice(-8)) {
+    if (typeof message.content === 'string') {
+      bubble(message.role === 'user' ? 'user' : 'jarvis', message.content);
+    } else if (Array.isArray(message.content)) {
+      const text = message.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+      if (text) bubble(message.role === 'user' ? 'user' : 'jarvis', text);
+    }
+  }
+
+  const who = memory.settings.name ? `, ${memory.settings.name}` : '';
+  const greeting = isOffline()
+    ? `Running offline${who} — timers, tasks and memory work. Add an API key in settings for the full brain.`
+    : (who ? `Good to see you${who}. Standing by.` : 'Systems online. Standing by.');
+  bubble('jarvis', greeting);
+  voice.say(greeting);
+}
+
+async function init() {
+  // Does the server hold an API key, or must the browser supply one? Opened
+  // straight off disk there is no server to ask, and fetch on a file:// URL
+  // logs an error even when it is caught — so don't ask.
+  if (window.location.protocol === 'file:') {
+    proxyMode = false;
+  } else {
+    try {
+      const config = await fetch('/api/config').then((r) => r.json());
+      proxyMode = Boolean(config.proxy);
+    } catch {
+      proxyMode = false;
+    }
+  }
+  brain.proxy = proxyMode;
+
+  setAccent(memory.settings.accent);
+  wireSettings();
+  renderLists();
+  tickClock();
+  setInterval(tickClock, 1000);
+
+  if (!Voice.webSpeechSupported) {
+    el.bootNote.textContent =
+      "This browser has no built-in speech recognition, so JARVIS will use its on-device " +
+      'engine — pick it in settings (it downloads a small model once). Typing always works.';
+  }
+  if (!proxyMode && !memory.settings.apiKey) {
+    el.bootNote.textContent =
+      'No API key needed to start — JARVIS runs offline and still does timers, tasks, ' +
+      'memory and the clock. Paste an Anthropic key in settings whenever you want the full model.';
+  }
+
+  // speechSynthesis populates its voice list asynchronously.
+  window.speechSynthesis?.addEventListener?.('voiceschanged', loadVoiceOptions);
+
+  // PWA: register the service worker so JARVIS installs and runs offline. Only
+  // over http(s) — a file:// page or the standalone single-file build has no SW.
+
+  setupInstall();
+
+  // Memory brain: open from the panel, close with the button or Escape.
+  el.brainBtn.addEventListener('click', openMind);
+  el.mindClose.addEventListener('click', closeMind);
+  el.mindSearch.addEventListener('input', (ev) => {
+    mind.setFilter(ev.target.value);
+  });
+
+  el.bootBtn.addEventListener('click', boot, { once: true });
+
+  el.composer.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const text = el.input.value;
+    el.input.value = '';
+    send(text);
+  });
+
+  el.micBtn.addEventListener('click', () => {
+    voice.cancelSpeech();
+    voice.listenNow();
+  });
+
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') {
+      if (!el.mind.hidden) {
+        closeMind();
+        return;
+      }
+      voice.cancelSpeech();
+      engine().abort();
+      return;
+    }
+    // "B" opens the brain, unless you're typing.
+    if ((ev.key === 'b' || ev.key === 'B') && !['INPUT', 'TEXTAREA'].includes(ev.target.tagName)) {
+      if (el.mind.hidden) openMind();
+      return;
+    }
+    // Space anywhere outside a text field starts a capture.
+    if (ev.code === 'Space' && !ev.repeat && !['INPUT', 'TEXTAREA'].includes(ev.target.tagName)) {
+      ev.preventDefault();
+      voice.cancelSpeech();
+      voice.listenNow();
+    }
+  });
+
+  memory.subscribe(() => {
+    /* lists re-render on demand; this keeps storage writes observable */
+  });
+}
+
+init();
+// --- end app.js ---
+
+}());
+</script>
+</body>
+</html>

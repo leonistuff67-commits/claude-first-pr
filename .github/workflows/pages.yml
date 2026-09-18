@@ -1,0 +1,56 @@
+# Publish JARVIS to GitHub Pages so it can be installed as an app with no
+# terminal: visit the site in Chrome/Edge and hit Install.
+name: Deploy JARVIS to Pages
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'jarvis/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish; queue at most one more.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Unit tests
+        working-directory: jarvis
+        run: npm test
+
+      - name: Build the standalone file
+        working-directory: jarvis
+        run: npm run build
+
+      - name: Assemble the site
+        run: |
+          mkdir -p _site
+          cp -r jarvis/public/. _site/
+          # Offer the single-file build as a download alongside the app.
+          cp jarvis/jarvis.html _site/jarvis.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4
