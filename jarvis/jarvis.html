@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>JARVIS</title>
 <meta name="description" content="A voice-first AI assistant with a reactive orb, persistent memory and tools." />
+<meta name="theme-color" content="#04070c" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="JARVIS" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='34' fill='%2334e7e4'/></svg>" />
 <style>
 /* ---------------------------------------------------------------------------
@@ -474,6 +478,27 @@ body.is-serious::after {
 }
 body.is-serious .clock__time { color: #fff; }
 
+/* --- install prompt (PWA) ------------------------------------------------ */
+
+.boot__install {
+  display: inline-block;
+  margin-top: 18px;
+  padding: 9px 22px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font: 500 11px/1 var(--font);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 160ms, border-color 160ms;
+}
+.boot__install:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
 </style>
 </head>
 <body>
@@ -558,6 +583,7 @@ body.is-serious .clock__time { color: #fff; }
     <h1 class="boot__title">JARVIS</h1>
     <p class="boot__sub">voice interface &middot; persistent memory &middot; local tools</p>
     <button class="boot__btn" id="boot-btn">Initialize</button>
+    <button class="boot__install" id="install-btn" hidden>Install as an app</button>
     <p class="boot__note" id="boot-note">
       Grants microphone access so the wake word works. Everything it remembers stays in this browser.
     </p>
@@ -1578,6 +1604,93 @@ class OfflineBrain {
 }
 // --- end offline.js ---
 
+// --- clap.js ---
+/**
+ * Double-clap detector — a pure state machine, no DOM or audio APIs, so it can
+ * be unit-tested with synthetic samples.
+ *
+ * You feed it the microphone's instantaneous peak level (0..1) on every frame
+ * via `feed(level, now)`. It tracks a slow ambient floor, spots a clap as a
+ * sharp onset that rises well above that floor, and fires `onDouble` when two
+ * onsets land within a human double-clap window (but far enough apart not to be
+ * one clap's own echo).
+ *
+ * The earlier version failed because its noise floor rose *fast* — a clap
+ * immediately dragged the floor up toward itself, erasing the very margin the
+ * test depended on. Here the floor only tracks quiet frames.
+ */
+class ClapDetector {
+  constructor(options = {}) {
+    this.onClap = options.onClap || (() => {});
+    this.onDouble = options.onDouble || (() => {});
+
+    // Tunables (overridable for tests).
+    this.minPeak = options.minPeak ?? 0.32;       // absolute floor a clap must clear
+    this.margin = options.margin ?? 0.18;         // and how far above the ambient floor
+    this.riseRatio = options.riseRatio ?? 2.2;    // spike must be this many× the floor
+    this.refractoryMs = options.refractoryMs ?? 180; // ignore this long after an onset
+    this.gapMinMs = options.gapMinMs ?? 120;      // closer than this = one clap ringing
+    this.gapMaxMs = options.gapMaxMs ?? 650;      // farther than this = two separate claps
+    this.floorAttack = options.floorAttack ?? 0.05; // how fast the ambient floor tracks quiet
+
+    this.reset();
+  }
+
+  reset() {
+    this.floor = 0.05;
+    this.prevLevel = 0;
+    this.lastOnsetAt = -Infinity;
+    this.lastClapAt = -Infinity;
+    this.armed = true;
+  }
+
+  /**
+   * @param {number} level  instantaneous peak amplitude, 0..1
+   * @param {number} now    timestamp in ms (monotonic)
+   * @returns {'double'|'clap'|null} what, if anything, this frame triggered
+   */
+  feed(level, now) {
+    const threshold = Math.max(this.minPeak, this.floor * this.riseRatio, this.floor + this.margin);
+
+    // A clap is a rising edge: this frame is loud, the previous one wasn't.
+    const isOnset =
+      this.armed &&
+      level >= threshold &&
+      this.prevLevel < threshold &&
+      now - this.lastOnsetAt > this.refractoryMs;
+
+    let result = null;
+
+    if (isOnset) {
+      this.lastOnsetAt = now;
+      this.armed = false; // re-armed once the level falls back down (below)
+
+      const gap = now - this.lastClapAt;
+      if (gap > this.gapMinMs && gap < this.gapMaxMs) {
+        this.lastClapAt = -Infinity; // consume the pair
+        result = 'double';
+        this.onDouble();
+      } else {
+        this.lastClapAt = now;
+        result = 'clap';
+        this.onClap();
+      }
+    } else if (level < threshold * 0.6) {
+      // Level has fallen well below threshold — ready for the next onset.
+      this.armed = true;
+    }
+
+    // Update the ambient floor only from quiet frames, so a clap never inflates it.
+    if (level < threshold) {
+      this.floor += (level - this.floor) * this.floorAttack;
+    }
+
+    this.prevLevel = level;
+    return result;
+  }
+}
+// --- end clap.js ---
+
 // --- voice.js ---
 /**
  * Ears and mouth.
@@ -1589,6 +1702,7 @@ class OfflineBrain {
  *
  * Also owns the mic analyser, which gives the orb something real to react to.
  */
+
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 /** Words that interrupt JARVIS mid-sentence. */
@@ -1623,14 +1737,15 @@ class Voice {
     this.speechEnvelope = 0;
     this.restartDelay = 250;
 
-    // Clap detection: a clap is a sharp broadband transient, so we watch a
-    // fast time-domain signal for a peak that rises and falls within a few
-    // frames rather than the sustained energy of speech.
+    // Clap detection runs off a fast time-domain read of the mic, fed into a
+    // tested state machine (clap.js).
     this.timeData = null;
-    this.clapArmed = true;       // false during a clap's own ringout (refractory)
-    this.lastClapAt = 0;         // timestamp of the previous accepted clap
     this.clapWatch = null;
-    this.clapBaseline = 0;       // rolling noise floor
+    this.clapDetector = new ClapDetector({
+      onDouble: () => {
+        if (!this.suppressed && !this.speaking) this.on.doubleClap?.();
+      },
+    });
   }
 
   // --- microphone ----------------------------------------------------------
@@ -1643,13 +1758,17 @@ class Voice {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.75;
+      // A larger window (~46ms at 44.1kHz) so a clap's transient can't slip
+      // between samples, and no smoothing on the time-domain read.
+      analyser.fftSize = 2048;
+      analyser.smoothingTimeConstant = 0.6;
       source.connect(analyser);
       this.audioContext = ctx;
       this.analyser = analyser;
       this.micData = new Uint8Array(analyser.frequencyBinCount);
       this.timeData = new Uint8Array(analyser.fftSize);
+      // Some browsers start the context suspended until a gesture resumes it.
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
       return true;
     } catch (err) {
       this.on.error?.(`Microphone unavailable: ${err.message}`);
@@ -1658,55 +1777,36 @@ class Voice {
   }
 
   /**
-   * Watch for a double clap and fire `on.doubleClap`. A clap shows up as a
-   * short, high-amplitude spike well above the ambient floor; two of them
-   * within a window — but not so close they're one clap's echo — count as the
-   * gesture. Ignored while JARVIS is speaking, so its own audio can't trip it.
+   * Start sampling the mic for claps and firing `on.doubleClap`. The detection
+   * logic lives in the tested ClapDetector; here we just feed it the peak level
+   * every frame. Polls fast (~16ms) so a clap's short transient is never missed.
    */
   startClapWatch() {
     if (this.clapWatch || !this.analyser) return;
-
-    const PEAK = 0.55;      // fraction of full scale a clap must reach
-    const OVER_FLOOR = 0.28; // and how far above the rolling ambient floor
-    const REFRACTORY = 140;  // ms to ignore after a clap, so its ring isn't recounted
-    const GAP_MAX = 600;     // two claps this far apart or less = a double clap
-    const GAP_MIN = 130;     // any closer and it's one clap ringing, not two
-
+    this.clapDetector.reset();
     this.clapWatch = setInterval(() => {
-      if (!this.analyser || this.suppressed || this.speaking) return;
-      this.analyser.getByteTimeDomainData(this.timeData);
-
-      // Peak deviation from the 128 midpoint, normalised to 0..1.
-      let peak = 0;
-      for (let i = 0; i < this.timeData.length; i++) {
-        const dev = Math.abs(this.timeData[i] - 128) / 128;
-        if (dev > peak) peak = dev;
-      }
-
-      // Slow-moving noise floor: rises fast, falls slowly.
-      this.clapBaseline += (peak - this.clapBaseline) * (peak > this.clapBaseline ? 0.25 : 0.02);
-
-      const now = performance.now();
-      const isSpike = peak > PEAK && peak - this.clapBaseline > OVER_FLOOR;
-
-      if (this.clapArmed && isSpike) {
-        this.clapArmed = false;
-        setTimeout(() => { this.clapArmed = true; }, REFRACTORY);
-
-        const gap = now - this.lastClapAt;
-        if (gap > GAP_MIN && gap < GAP_MAX) {
-          this.lastClapAt = 0;
-          this.on.doubleClap?.();
-        } else {
-          this.lastClapAt = now;
-        }
-      }
-    }, 30);
+      if (!this.analyser) return;
+      // While JARVIS talks the mic mostly hears JARVIS — feed silence so its
+      // own speech can't clap at it (the detector's floor stays calm too).
+      const level = this.suppressed || this.speaking ? 0 : this.#micPeak();
+      this.clapDetector.feed(level, performance.now());
+    }, 16);
   }
 
   stopClapWatch() {
     clearInterval(this.clapWatch);
     this.clapWatch = null;
+  }
+
+  /** Peak deviation from the midpoint across the current window, 0..1. */
+  #micPeak() {
+    this.analyser.getByteTimeDomainData(this.timeData);
+    let peak = 0;
+    for (let i = 0; i < this.timeData.length; i++) {
+      const dev = Math.abs(this.timeData[i] - 128) / 128;
+      if (dev > peak) peak = dev;
+    }
+    return peak;
   }
 
   /** Current input loudness, 0..1. Falls back to the speech envelope while talking. */
@@ -2802,6 +2902,9 @@ async function init() {
 
   // speechSynthesis populates its voice list asynchronously.
   window.speechSynthesis?.addEventListener?.('voiceschanged', loadVoiceOptions);
+
+  // PWA: register the service worker so JARVIS installs and runs offline. Only
+  // over http(s) — a file:// page or the standalone single-file build has no SW.
 
   el.bootBtn.addEventListener('click', boot, { once: true });
 

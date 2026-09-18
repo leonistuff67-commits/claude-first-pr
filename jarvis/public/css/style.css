@@ -464,3 +464,24 @@ body.is-serious::after {
   50% { opacity: 1; }
 }
 body.is-serious .clock__time { color: #fff; }
+
+/* --- install prompt (PWA) ------------------------------------------------ */
+
+.boot__install {
+  display: inline-block;
+  margin-top: 18px;
+  padding: 9px 22px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font: 500 11px/1 var(--font);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 160ms, border-color 160ms;
+}
+.boot__install:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}

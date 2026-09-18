@@ -8,6 +8,9 @@ can actually run.
 
 ## What it does
 
+- **Installs as a real app.** It's a PWA: install it from Chrome/Edge and it gets its
+  own dock/taskbar icon and window, no browser chrome, working fully offline — while
+  keeping the wake word and dictation that native wrappers can't.
 - **Works with no API key.** Out of the box, with no key at all, JARVIS runs on a
   local pattern-matching brain — timers, tasks, memory, the clock, recolouring and
   serious mode all work offline and never touch the network. Paste an Anthropic key in
@@ -38,6 +41,30 @@ can actually run.
 ![Serious mode: the orb and frame turn red, running offline with a local timer and stored facts](docs/serious.png)
 
 ## Running it
+
+There are two ways to run it, depending on whether you want a proper installed
+app or just a file to open.
+
+### As an installed app (recommended)
+
+JARVIS is a PWA — it installs to your dock/taskbar and opens in its own window,
+no browser chrome, and runs fully offline once installed.
+
+```bash
+cd jarvis
+npm start
+# -> http://localhost:8787
+```
+
+Open that in Chrome or Edge and click **Install as an app** on the boot screen
+(or the install icon in the address bar). It gets its own icon and window and
+behaves like any other desktop app — but keeps the wake word and dictation
+working, which native wrappers like Electron can't, because those rely on
+Chrome's speech engine.
+
+Everything is cached on first load, so after installing it opens even with no
+network. Add an API key in settings for the full model, or leave it out and run
+on the offline brain.
 
 ### The one file
 
@@ -97,10 +124,12 @@ you're in on the boot screen.
 | `public/js/app.js` | The turn loop, the HUD, serious mode, and the state machine. |
 | `public/js/brain.js` | Messages API client: per-model request shaping (effort, fallbacks) and SSE parsing. |
 | `public/js/offline.js` | The no-key brain: turns phrases into tool calls with no network. |
-| `public/js/voice.js` | Wake word, silence detection, barge-in, the double-clap detector, and the speech queue. |
+| `public/js/voice.js` | Wake word, silence detection, barge-in, mic sampling, and the speech queue. |
+| `public/js/clap.js` | The double-clap detector — a pure state machine, so it's unit-testable. |
 | `public/js/tools.js` | Tool schemas and their browser-side handlers. |
 | `public/js/memory.js` | `localStorage` state: settings, facts, tasks, conversation. |
 | `public/js/orb.js` | The canvas visualizer. |
+| `public/sw.js`, `public/manifest.webmanifest`, `public/icons/` | PWA shell: offline cache, install metadata, app icons. |
 
 A turn runs as: utterance → `messages.create` (streamed) → speak the text as it
 arrives → if `stop_reason` is `tool_use`, run every tool in the turn, send all the
@@ -125,20 +154,26 @@ left out on purpose. The tools it does have are the safe, browser-scoped ones ab
 ## Tests
 
 ```bash
-npm test              # SSE parser + offline interpreter (no browser needed)
+npm test              # SSE parser + offline interpreter + clap detector (no browser)
 npm run test:e2e      # served app: full turn loop in a real browser vs a mock API
 npm run test:bundle   # built jarvis.html over file://: model/effort pickers + serious mode
 npm run test:offline  # built jarvis.html with NO key: tools run locally, network untouched
+npm run test:clap     # feeds a real two-clap WAV through the mic and checks detection
+npm run test:pwa      # manifest + service worker, then boots with the server killed
+npm run test:all      # everything above in sequence
 ```
 
-The unit tests have no dependencies. The three browser tests need Playwright (`npm
-install`); set `PLAYWRIGHT_MODULE` to an absolute path if yours lives somewhere unusual.
-Together they cover all three transports:
+The unit tests have no dependencies. The browser tests need Playwright (`npm install`);
+set `PLAYWRIGHT_MODULE` to an absolute path if yours lives somewhere unusual. Together
+they cover every transport and the two things that are easy to get wrong:
 
 - `test:e2e` boots the real server against a mock API and checks a tool-calling turn —
   the reply, the timer panel, that the orb is painting, and that memory survives a reload.
 - `test:bundle` rebuilds the single file, opens it off disk in direct mode, and checks the
-  request headers, the model and effort pickers, and serious-mode escalation to the
-  strongest model at `max`.
+  request headers, the model and effort pickers, and serious-mode escalation to `max`.
 - `test:offline` opens the file with no key and proves the whole thing runs on the local
   brain — a timer and a memory command land, and nothing hits the network.
+- `test:clap` synthesizes a WAV with two real claps, plays it through Chromium's fake
+  microphone, and asserts the app reacts — the actual audio path, not just the math.
+- `test:pwa` checks the manifest and that the service worker activates and precaches the
+  shell, then **kills the server** and confirms the app still boots — real offline install.

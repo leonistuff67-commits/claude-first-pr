@@ -607,6 +607,36 @@ async function init() {
   // speechSynthesis populates its voice list asynchronously.
   window.speechSynthesis?.addEventListener?.('voiceschanged', loadVoiceOptions);
 
+  // PWA: register the service worker so JARVIS installs and runs offline. Only
+  // over http(s) — a file:// page or the standalone single-file build has no SW.
+  // BUILD-STRIP-START (removed from the single-file bundle)
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    navigator.serviceWorker.register('sw.js').catch(() => {
+      /* first run offline, or SW unsupported — the app still works. */
+    });
+  }
+
+  // Reveal an "Install as an app" button when the browser offers installation.
+  let installPrompt = null;
+  const installBtn = $('install-btn');
+  window.addEventListener('beforeinstallprompt', (ev) => {
+    ev.preventDefault();
+    installPrompt = ev;
+    if (installBtn) installBtn.hidden = false;
+  });
+  installBtn?.addEventListener('click', async () => {
+    if (!installPrompt) return;
+    installBtn.hidden = true;
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => {});
+    installPrompt = null;
+  });
+  window.addEventListener('appinstalled', () => {
+    if (installBtn) installBtn.hidden = true;
+    toast('JARVIS installed.');
+  });
+  // BUILD-STRIP-END
+
   el.bootBtn.addEventListener('click', boot, { once: true });
 
   el.composer.addEventListener('submit', (ev) => {

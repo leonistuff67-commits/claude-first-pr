@@ -5,7 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>JARVIS</title>
 <meta name="description" content="A voice-first AI assistant with a reactive orb, persistent memory and tools." />
+<meta name="theme-color" content="#04070c" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="JARVIS" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='34' fill='%2334e7e4'/></svg>" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<link rel="manifest" href="manifest.webmanifest" />
 <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
@@ -90,6 +96,7 @@
     <h1 class="boot__title">JARVIS</h1>
     <p class="boot__sub">voice interface &middot; persistent memory &middot; local tools</p>
     <button class="boot__btn" id="boot-btn">Initialize</button>
+    <button class="boot__install" id="install-btn" hidden>Install as an app</button>
     <p class="boot__note" id="boot-note">
       Grants microphone access so the wake word works. Everything it remembers stays in this browser.
     </p>

@@ -14,10 +14,16 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
 
 /** Dependency order: each module may use everything above it. */
-const MODULES = ['memory.js', 'tools.js', 'brain.js', 'offline.js', 'voice.js', 'orb.js', 'app.js'];
+const MODULES = ['memory.js', 'tools.js', 'brain.js', 'offline.js', 'clap.js', 'voice.js', 'orb.js', 'app.js'];
 
 function stripModuleSyntax(source, name) {
-  return source
+  // Drop anything the standalone file can't use (e.g. service-worker
+  // registration — there's no SW next to a single file).
+  const withoutBuildBlocks = source.replace(
+    /^[ \t]*\/\/ BUILD-STRIP-START[\s\S]*?\/\/ BUILD-STRIP-END[ \t]*\n/gm,
+    '',
+  );
+  return withoutBuildBlocks
     .split('\n')
     .filter((line) => !/^import\s.*from\s.*;$/.test(line.trim()))
     .filter((line) => !/^export\s*\{[^}]*\}\s*;$/.test(line.trim()))
@@ -37,6 +43,12 @@ for (const name of MODULES) {
 
 let html = await fs.readFile(path.join(PUBLIC, 'index.html'), 'utf8');
 
+// A single file can't be a PWA (no service worker over file://), so drop the
+// manifest and touch-icon links from the standalone build.
+html = html
+  .replace(/^\s*<link rel="manifest"[^>]*>\n/m, '')
+  .replace(/^\s*<link rel="apple-touch-icon"[^>]*>\n/m, '');
+
 html = html.replace(
   '<link rel="stylesheet" href="css/style.css" />',
   `<style>\n${css}\n</style>`,
@@ -46,8 +58,8 @@ html = html.replace(
   `<script>\n(function () {\n'use strict';\n\n${scripts.join('\n')}\n}());\n</script>`,
 );
 
-// Guard against a module slipping through with its import lines intact.
-for (const marker of ['from \'./', 'type="module"', 'href="css/']) {
+// Guard against a module or PWA reference slipping through into the bundle.
+for (const marker of ['from \'./', 'type="module"', 'href="css/', 'rel="manifest"', 'serviceWorker']) {
   if (html.includes(marker)) throw new Error(`bundle still references ${marker}`);
 }
 
