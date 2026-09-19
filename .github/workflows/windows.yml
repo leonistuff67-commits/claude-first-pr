@@ -4,8 +4,11 @@
 # produces a real .exe: an Electron shell whose main process holds the only
 # access to the machine, handing the renderer a narrow, permission-gated bridge.
 #
-# Run it from the Actions tab. Two artifacts come out: an installer (JARVIS
-# Setup x.y.z.exe) and a portable build that runs without installing.
+# Run it from the Actions tab. It publishes the installer and the portable build
+# to the repository's Releases page, because a build artifact is a zip at the
+# bottom of a log page that only shows up when you are signed in — which is no
+# way to hand somebody an application. The artifact is still uploaded as well,
+# for the builds that are not releases.
 name: Build Windows app
 
 on:
@@ -18,7 +21,8 @@ on:
       - '.github/workflows/windows.yml'
 
 permissions:
-  contents: read
+  # Needed to publish the release the installer is attached to.
+  contents: write
 
 jobs:
   windows:
@@ -56,3 +60,33 @@ jobs:
             jarvis-desktop/dist/*.exe
             jarvis-desktop/dist/*.blockmap
           if-no-files-found: error
+
+      # The point of this step: a plain download link that works without being
+      # signed in, does not expire, and is always at the same address.
+      - name: Publish to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-latest-build
+          name: JARVIS for Windows
+          body: |
+            JARVIS as a Windows application — voice, memory brain, and the
+            ability to open your installed programs, files and clipboard.
+
+            **Download `JARVIS.Setup.1.0.0.exe`** below and run it.
+
+            Windows SmartScreen will warn you on first launch, because this is
+            not code-signed. Click **More info**, then **Run anyway**.
+
+            Once installed, JARVIS sits in your system tray. **Ctrl+Shift+J**
+            brings it up from anywhere.
+
+            Nothing on your machine is touched until you approve it: the first
+            time JARVIS tries to open a program it asks, naming that program,
+            and approving one never approves another. The tray menu has
+            **Revoke all permissions**.
+
+            Built from `${{ github.sha }}`.
+          files: |
+            jarvis-desktop/dist/*.exe
+          fail_on_unmatched_files: true
+          make_latest: true
