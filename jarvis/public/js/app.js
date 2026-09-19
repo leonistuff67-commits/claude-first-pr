@@ -16,6 +16,7 @@ import { CONNECTORS } from './connectors.js';
 import { PROVIDERS, providerFor, ProviderBrain } from './providers.js';
 import { Gmail, formatInbox } from './gmail.js';
 import { createTools, fmtDuration } from './tools.js';
+import { sanitize, repair } from './history.js';
 
 const $ = (id) => document.getElementById(id);
 const MAX_TOOL_ROUNDS = 6;
@@ -433,22 +434,6 @@ function buildSystemPrompt() {
   return lines.join('\n');
 }
 
-/**
- * Drop leading messages until the history starts on a clean user turn, so a
- * trimmed transcript never opens with an orphaned tool_result.
- */
-function sanitize(messages) {
-  let out = messages.slice(-40);
-  while (out.length) {
-    const first = out[0];
-    const orphanResult =
-      Array.isArray(first.content) && first.content.some((b) => b.type === 'tool_result');
-    if (first.role === 'user' && !orphanResult) break;
-    out = out.slice(1);
-  }
-  return out;
-}
-
 // --- the turn loop ----------------------------------------------------------
 
 /** Flip the busy flag and mirror it onto the DOM (handy for tests/automation). */
@@ -491,13 +476,20 @@ async function send(text) {
 
       messages.push({ role: 'assistant', content: result.content });
 
-      if (result.stopReason !== 'tool_use') {
+      // What decides the next round is whether the model actually asked for a
+      // tool, not what it said its stop reason was. A reply cut short by the
+      // token ceiling still carries the tool_use blocks it managed to emit, and
+      // leaving one unanswered would wedge every later request.
+      const calls = result.content.filter((b) => b.type === 'tool_use');
+      if (!calls.length) {
         voice.flush();
+        if (result.stopReason === 'max_tokens') {
+          bubble('error', 'That reply hit the length limit, so it may be cut off.');
+        }
         break;
       }
 
       // Run every tool_use block in this turn, then hand all results back at once.
-      const calls = result.content.filter((b) => b.type === 'tool_use');
       const results = [];
       for (const call of calls) {
         bubble('tool', `· ${call.name}`);
@@ -1063,6 +1055,13 @@ async function boot() {
 }
 
 async function init() {
+  // A transcript saved by an older build (or by a turn that was cut short) can
+  // hold a tool call with no result, which every later request would be
+  // rejected for. Heal it once, here, rather than stranding the user with an
+  // assistant that can only answer with the same API error forever.
+  const healed = repair(memory.history);
+  if (JSON.stringify(healed) !== JSON.stringify(memory.history)) memory.replaceHistory(healed);
+
   // Does the server hold an API key, or must the browser supply one? Opened
   // straight off disk there is no server to ask, and fetch on a file:// URL
   // logs an error even when it is caught — so don't ask.
