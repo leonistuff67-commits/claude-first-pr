@@ -954,20 +954,27 @@ body[data-state="thinking"] .composer {
   <form method="dialog" class="settings__form" id="settings-form">
     <h2>Settings</h2>
 
-    <label class="field" id="field-key">
-      <span>Anthropic API key</span>
-      <input type="password" id="set-key" placeholder="sk-ant-..." />
-      <small id="key-note">Stored in this browser only.</small>
-    </label>
+
 
     <label class="field">
       <span>Brain <small id="brain-note"></small></span>
       <select id="set-brain">
         <option value="auto">Automatic</option>
-        <option value="claude">Claude — needs an API key, by far the smartest</option>
+        <option value="api">Cloud AI — pick a provider below, needs that provider's key</option>
         <option value="local">Local AI — no key, runs in this browser (one-time download)</option>
         <option value="rules">Offline rules — no key, instant, handles the basics</option>
       </select>
+    </label>
+
+    <label class="field" id="field-provider">
+      <span>Provider</span>
+      <select id="set-provider"><!-- filled from PROVIDERS --></select>
+    </label>
+
+    <label class="field" id="field-key">
+      <span>API key <small id="key-where"></small></span>
+      <input type="password" id="set-key" placeholder="paste your key" />
+      <small id="key-note">Stored in this browser only, never sent anywhere but that provider.</small>
     </label>
 
     <label class="field" id="field-speed">
@@ -976,11 +983,11 @@ body[data-state="thinking"] .composer {
     </label>
 
     <label class="field" id="field-model">
-      <span>Claude model</span>
-      <select id="set-model"><!-- filled from Brain.models --></select>
+      <span>Model</span>
+      <select id="set-model"><!-- filled per provider --></select>
     </label>
 
-    <label class="field">
+    <label class="field" id="field-effort">
       <span>Effort <small id="effort-note"></small></span>
       <select id="set-effort"><!-- filled per selected model --></select>
     </label>
@@ -1070,7 +1077,10 @@ const DEFAULTS = {
     webSearch: false,
     name: '',
     clapToDictate: true,     // double-clap starts a capture
-    brain: 'auto',           // auto | claude | local (in-browser LLM) | rules
+    brain: 'auto',           // auto | api | local (in-browser LLM) | rules
+    provider: 'anthropic',   // which API provider when brain is 'api'
+    providerKeys: {},        // per-provider API keys, this browser only
+    providerModels: {},      // per-provider chosen model
     connectors: {},          // per-connector on/off; empty means all on
     localModel: '',          // override the in-browser model id
     localSpeed: 'balanced',  // fastest | balanced | smartest
@@ -3694,6 +3704,336 @@ class MindView {
 }
 // --- end mind.js ---
 
+// --- providers.js ---
+/**
+ * Other AI providers.
+ *
+ * Almost every major API now speaks the OpenAI chat-completions shape — and
+ * Google exposes Gemini through an OpenAI-compatible endpoint — so one adapter
+ * covers all of them. Anthropic keeps its own client (brain.js) because its
+ * wire format genuinely differs.
+ *
+ * The conversion helpers are pure so the message and tool translation can be
+ * tested without a key.
+ */
+
+/**
+ * Each provider: where to send requests, some current models, and where to get
+ * a key. `browser` notes whether the API is usually callable straight from a
+ * page — several block cross-origin requests, in which case use the local
+ * server proxy or a gateway like OpenRouter.
+ */
+const PROVIDERS = {
+  anthropic: {
+    label: 'Claude (Anthropic)',
+    native: true, // handled by brain.js
+    keyUrl: 'https://console.anthropic.com/settings/keys',
+    keyPrefix: 'sk-ant-',
+    browser: true,
+  },
+  openai: {
+    label: 'OpenAI (GPT)',
+    baseUrl: 'https://api.openai.com/v1',
+    models: ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o4-mini'],
+    keyUrl: 'https://platform.openai.com/api-keys',
+    keyPrefix: 'sk-',
+    browser: true,
+  },
+  google: {
+    label: 'Google Gemini',
+    // Google's OpenAI-compatibility layer, so the same adapter works.
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+    keyUrl: 'https://aistudio.google.com/apikey',
+    browser: true,
+  },
+  groq: {
+    label: 'Groq (very fast)',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'],
+    keyUrl: 'https://console.groq.com/keys',
+    keyPrefix: 'gsk_',
+    browser: true,
+  },
+  openrouter: {
+    label: 'OpenRouter (one key, many models)',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    models: [
+      'anthropic/claude-sonnet-4.5',
+      'openai/gpt-4o-mini',
+      'google/gemini-2.0-flash-001',
+      'meta-llama/llama-3.3-70b-instruct',
+      'deepseek/deepseek-chat',
+    ],
+    keyUrl: 'https://openrouter.ai/keys',
+    keyPrefix: 'sk-or-',
+    browser: true,
+  },
+  deepseek: {
+    label: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    models: ['deepseek-chat', 'deepseek-reasoner'],
+    keyUrl: 'https://platform.deepseek.com/api_keys',
+    browser: false,
+  },
+  mistral: {
+    label: 'Mistral',
+    baseUrl: 'https://api.mistral.ai/v1',
+    models: ['mistral-large-latest', 'mistral-small-latest', 'open-mistral-nemo'],
+    keyUrl: 'https://console.mistral.ai/api-keys',
+    browser: false,
+  },
+  xai: {
+    label: 'xAI (Grok)',
+    baseUrl: 'https://api.x.ai/v1',
+    models: ['grok-4', 'grok-3', 'grok-3-mini'],
+    keyUrl: 'https://console.x.ai',
+    keyPrefix: 'xai-',
+    browser: false,
+  },
+  ollama: {
+    label: 'Ollama (on your own machine)',
+    baseUrl: 'http://localhost:11434/v1',
+    models: ['llama3.2', 'qwen2.5', 'mistral', 'phi4'],
+    keyUrl: 'https://ollama.com/download',
+    noKey: true,
+    browser: true,
+  },
+};
+
+function providerIds() {
+  return Object.keys(PROVIDERS);
+}
+
+function providerFor(id) {
+  return PROVIDERS[id] || null;
+}
+
+/** Anthropic tool definitions -> OpenAI function definitions. */
+function toOpenAITools(tools) {
+  if (!tools?.length) return undefined;
+  return tools.map((t) => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema || { type: 'object', properties: {} },
+    },
+  }));
+}
+
+/**
+ * The Anthropic-shaped history app.js keeps -> OpenAI messages.
+ * tool_use becomes an assistant message with tool_calls; tool_result becomes a
+ * message with the `tool` role, which is what the OpenAI format expects.
+ */
+function toOpenAIMessages(system, messages) {
+  const out = [{ role: 'system', content: system }];
+  for (const m of messages || []) {
+    if (typeof m.content === 'string') {
+      out.push({ role: m.role, content: m.content });
+      continue;
+    }
+    const blocks = Array.isArray(m.content) ? m.content : [];
+    const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+    const calls = blocks.filter((b) => b.type === 'tool_use');
+    const results = blocks.filter((b) => b.type === 'tool_result');
+
+    if (results.length) {
+      for (const r of results) {
+        out.push({
+          role: 'tool',
+          tool_call_id: r.tool_use_id,
+          content: typeof r.content === 'string' ? r.content : JSON.stringify(r.content),
+        });
+      }
+      continue;
+    }
+    if (calls.length) {
+      out.push({
+        role: 'assistant',
+        content: text || null,
+        tool_calls: calls.map((c) => ({
+          id: c.id,
+          type: 'function',
+          function: { name: c.name, arguments: JSON.stringify(c.input || {}) },
+        })),
+      });
+      continue;
+    }
+    if (text) out.push({ role: m.role, content: text });
+  }
+  return out;
+}
+
+/**
+ * Fold a streamed delta into an accumulator of tool calls. OpenAI sends tool
+ * call arguments in fragments keyed by index, exactly like Anthropic's
+ * input_json_delta, so they have to be stitched together.
+ */
+function accumulateToolCalls(acc, deltaCalls) {
+  for (const call of deltaCalls || []) {
+    const i = call.index ?? 0;
+    if (!acc[i]) acc[i] = { id: call.id || `call_${i}`, name: '', args: '' };
+    if (call.id) acc[i].id = call.id;
+    if (call.function?.name) acc[i].name += call.function.name;
+    if (call.function?.arguments) acc[i].args += call.function.arguments;
+  }
+  return acc;
+}
+
+/** Finished accumulator -> Anthropic-shaped tool_use blocks. */
+function toToolUseBlocks(acc) {
+  return acc.filter(Boolean).map((c) => {
+    let input = {};
+    try {
+      input = c.args ? JSON.parse(c.args) : {};
+    } catch {
+      input = {};
+    }
+    return { type: 'tool_use', id: c.id, name: c.name, input };
+  });
+}
+
+/** Turn an HTTP failure into something a person can act on. */
+function explainError(status, body, providerLabel) {
+  let message = body;
+  try {
+    const parsed = JSON.parse(body);
+    message = parsed?.error?.message || parsed?.message || body;
+  } catch {
+    // Not JSON; use as-is.
+  }
+  if (status === 401 || status === 403) return `${providerLabel} rejected the key (${status}). Check it in settings.`;
+  if (status === 404) return `${providerLabel} doesn't have that model (404). Pick another in settings.`;
+  if (status === 429) return `${providerLabel} is rate limiting you (429). Wait a moment.`;
+  return `${providerLabel} error ${status}: ${String(message).slice(0, 200) || 'no detail'}`;
+}
+
+/** Streams any OpenAI-compatible provider, exposing the same contract as Brain. */
+class ProviderBrain {
+  /** @param {{getSettings: () => object}} options */
+  constructor({ getSettings }) {
+    this.getSettings = getSettings;
+    this.controller = null;
+    this.betas = [];
+  }
+
+  abort() {
+    this.controller?.abort();
+    this.controller = null;
+  }
+
+  #config() {
+    const s = this.getSettings();
+    const id = s.provider || 'openai';
+    const provider = providerFor(id);
+    if (!provider) throw new Error(`Unknown provider "${id}".`);
+    const key = (s.providerKeys || {})[id] || '';
+    if (!provider.noKey && !key) {
+      throw new Error(`No API key for ${provider.label}. Add one in settings.`);
+    }
+    const model = (s.providerModels || {})[id] || provider.models?.[0];
+    return { id, provider, key, model };
+  }
+
+  async stream({ system, messages, tools }, on = {}) {
+    const { provider, key, model } = this.#config();
+
+    const body = {
+      model,
+      messages: toOpenAIMessages(system, messages),
+      stream: true,
+      max_tokens: 1024,
+    };
+    const fnTools = toOpenAITools(tools);
+    if (fnTools) body.tools = fnTools;
+
+    this.controller = new AbortController();
+    const headers = { 'content-type': 'application/json' };
+    if (key) headers.authorization = `Bearer ${key}`;
+    // OpenRouter asks callers to identify themselves.
+    if (provider.baseUrl.includes('openrouter')) headers['x-title'] = 'JARVIS';
+
+    let res;
+    try {
+      res = await fetch(`${provider.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: this.controller.signal,
+      });
+    } catch (err) {
+      if (err.name === 'AbortError') throw err;
+      throw new Error(
+        `Couldn't reach ${provider.label}.`
+        + (provider.browser === false
+          ? ' This provider usually blocks requests straight from a browser — try OpenRouter, or run the local server.'
+          : ' Check your connection.'),
+      );
+    }
+
+    if (!res.ok) {
+      throw new Error(explainError(res.status, await res.text().catch(() => ''), provider.label));
+    }
+
+    return this.#consume(res, on, model);
+  }
+
+  async #consume(res, on, model) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+    let finish = null;
+    const toolAcc = [];
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let split;
+      while ((split = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, split).trim();
+        buffer = buffer.slice(split + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') continue;
+
+        let event;
+        try {
+          event = JSON.parse(payload);
+        } catch {
+          continue;
+        }
+        const choice = event.choices?.[0];
+        if (!choice) continue;
+        if (choice.delta?.content) {
+          text += choice.delta.content;
+          on.text?.(choice.delta.content);
+        }
+        if (choice.delta?.tool_calls) accumulateToolCalls(toolAcc, choice.delta.tool_calls);
+        if (choice.finish_reason) finish = choice.finish_reason;
+      }
+    }
+
+    this.controller = null;
+    const blocks = [];
+    if (text.trim()) blocks.push({ type: 'text', text });
+    const calls = toToolUseBlocks(toolAcc);
+    for (const call of calls) on.toolUse?.(call);
+    blocks.push(...calls);
+
+    return {
+      content: blocks,
+      stopReason: calls.length ? 'tool_use' : (finish === 'length' ? 'max_tokens' : 'end_turn'),
+      model,
+    };
+  }
+}
+// --- end providers.js ---
+
 // --- localbrain.js ---
 /**
  * The local brain — a real language model running in this browser on WebGPU,
@@ -4160,6 +4500,7 @@ function tickClock() {
 
 const brain = new Brain({ proxy: false, getSettings: () => memory.settings });
 const offlineBrain = new OfflineBrain();
+const providerBrain = new ProviderBrain({ getSettings: () => memory.settings });
 const localBrain = new LocalBrain({
   getSettings: () => memory.settings,
   on: {
@@ -4192,21 +4533,31 @@ function brainKind() {
   const pref = memory.settings.brain || 'auto';
   if (pref === 'local') return 'local';
   if (pref === 'rules') return 'rules';
-  if (pref === 'claude') return 'claude';
-  return proxyMode || memory.settings.apiKey ? 'claude' : 'rules';
+  if (pref === 'api' || pref === 'claude') return 'api';
+  return proxyMode || hasProviderKey() ? 'api' : 'rules';
+}
+
+/** Is there a usable key for the selected provider? */
+function hasProviderKey() {
+  const s = memory.settings;
+  const id = s.provider || 'anthropic';
+  if (providerFor(id)?.noKey) return true;
+  if (id === 'anthropic') return Boolean(s.apiKey || (s.providerKeys || {}).anthropic);
+  return Boolean((s.providerKeys || {})[id]);
 }
 
 /** True when no Anthropic key is in play, whatever is driving instead. */
 function isOffline() {
-  return brainKind() !== 'claude';
+  return brainKind() !== 'api';
 }
 
 /** The engine this turn should use. */
 function engine() {
   const kind = brainKind();
   if (kind === 'local') return localBrain;
-  if (kind === 'claude') return brain;
-  return offlineBrain;
+  if (kind !== 'api') return offlineBrain;
+  // Anthropic has its own client; everything else speaks the OpenAI shape.
+  return (memory.settings.provider || 'anthropic') === 'anthropic' ? brain : providerBrain;
 }
 
 const voice = new Voice({
@@ -4486,16 +4837,60 @@ function loadVoiceOptions() {
   }
 }
 
-/** Fill the model picker from Brain's roster. */
-function populateModelOptions() {
-  const select = $('set-model');
-  select.innerHTML = '';
-  for (const [id, meta] of Object.entries(Brain.models)) {
+/** Fill the provider picker. */
+function populateProviderOptions() {
+  const select = $('set-provider');
+  if (select.options.length) return;
+  for (const [id, meta] of Object.entries(PROVIDERS)) {
     const opt = document.createElement('option');
     opt.value = id;
     opt.textContent = meta.label;
     select.append(opt);
   }
+}
+
+/** Current provider id, defaulting to Claude. */
+function currentProvider() {
+  return memory.settings.provider || 'anthropic';
+}
+
+/** Fill the model picker for whichever provider is selected. */
+function populateModelOptions() {
+  const select = $('set-model');
+  const id = currentProvider();
+  select.innerHTML = '';
+
+  const entries = id === 'anthropic'
+    ? Object.entries(Brain.models).map(([value, meta]) => [value, meta.label])
+    : (providerFor(id)?.models || []).map((m) => [m, m]);
+
+  for (const [value, label] of entries) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    select.append(opt);
+  }
+
+  const chosen = id === 'anthropic'
+    ? memory.settings.model
+    : (memory.settings.providerModels || {})[id];
+  if (chosen && entries.some(([v]) => v === chosen)) select.value = chosen;
+  else if (entries.length) select.value = entries[0][0];
+}
+
+/** Read/write the key for the selected provider. */
+function providerKey(id) {
+  const s = memory.settings;
+  if (id === 'anthropic') return (s.providerKeys || {}).anthropic || s.apiKey || '';
+  return (s.providerKeys || {})[id] || '';
+}
+
+function setProviderKey(id, value) {
+  const keys = { ...(memory.settings.providerKeys || {}) };
+  keys[id] = value;
+  memory.setSetting('providerKeys', keys);
+  // Keep the legacy field in step so existing Anthropic setups keep working.
+  if (id === 'anthropic') memory.setSetting('apiKey', value);
 }
 
 /** Fill the effort picker for whichever model is selected. */
@@ -4527,10 +4922,28 @@ function populateEffortOptions(model) {
 /** Reflect the current settings into the dialog controls (also after serious mode). */
 function syncSettingsControls() {
   const s = memory.settings;
-  $('set-key').value = s.apiKey;
-  $('set-model').value = s.model;
-  populateEffortOptions(s.model);
-  $('set-effort').value = Brain.effortsFor(s.model).includes(s.effort) ? s.effort : 'low';
+  populateProviderOptions();
+  const pid = currentProvider();
+  const provider = providerFor(pid);
+  const cloud = brainKind() === 'api';
+
+  $('set-provider').value = pid;
+  $('set-key').value = providerKey(pid);
+  $('set-key').placeholder = provider?.keyPrefix ? `${provider.keyPrefix}...` : 'paste your key';
+  $('key-where').textContent = provider?.noKey ? '(no key needed)' : '';
+  $('field-provider').style.display = cloud ? '' : 'none';
+  // In proxy mode the server holds the Anthropic key, so don't ask for one.
+  const serverHoldsKey = proxyMode && pid === 'anthropic';
+  $('field-key').style.display = cloud && !provider?.noKey && !serverHoldsKey ? '' : 'none';
+
+  populateModelOptions();
+  // Effort is an Anthropic concept; hide it for everyone else.
+  const anthropic = pid === 'anthropic';
+  $('field-effort').style.display = cloud && anthropic ? '' : 'none';
+  if (anthropic) {
+    populateEffortOptions(s.model);
+    $('set-effort').value = Brain.effortsFor(s.model).includes(s.effort) ? s.effort : 'low';
+  }
   $('set-wake').value = s.wakeWord;
   $('set-name').value = s.name;
   $('set-speak').checked = s.speak;
@@ -4549,8 +4962,7 @@ function syncSettingsControls() {
   $('field-speed').style.display = brainKind() === 'local' ? '' : 'none';
   $('set-brain').value = s.brain;
   $('brain-note').textContent = webGpuSupported() ? '' : '(local AI needs WebGPU — not available here)';
-  const claudeRows = brainKind() === 'claude';
-  $('field-model').style.display = claudeRows ? '' : 'none';
+  $('field-model').style.display = cloud ? '' : 'none';
   $('set-engine').value = s.speechEngine;
   $('engine-note').textContent = Voice.webSpeechSupported ? '' : '(browser engine unavailable here)';
   $('set-rate').value = s.rate;
@@ -4562,10 +4974,6 @@ function wireSettings() {
   populateModelOptions();
   syncSettingsControls();
 
-  if (proxyMode) {
-    $('field-key').style.display = 'none';
-  }
-
   const bind = (id, key, read = (e) => e.value) => {
     $(id).addEventListener('change', (ev) => {
       memory.setSetting(key, read(ev.target));
@@ -4573,7 +4981,6 @@ function wireSettings() {
     });
   };
 
-  bind('set-key', 'apiKey');
   bind('set-wake', 'wakeWord');
   bind('set-name', 'name');
   bind('set-voice', 'voiceURI');
@@ -4618,11 +5025,33 @@ function wireSettings() {
     voice.reloadEngine();
   });
 
+  $('set-key').addEventListener('change', (ev) => {
+    setProviderKey(currentProvider(), ev.target.value.trim());
+    applySettings();
+  });
+
+  $('set-provider').addEventListener('change', (ev) => {
+    memory.setSetting('provider', ev.target.value);
+    syncSettingsControls();
+    applyModelReadout();
+    const p = providerFor(ev.target.value);
+    if (p && p.browser === false && !providerKey(ev.target.value)) {
+      toast(`${p.label} often blocks browser requests — OpenRouter is the easy alternative.`);
+    }
+  });
+
   // Changing the model re-derives which effort levels are on offer.
   $('set-model').addEventListener('change', (ev) => {
-    memory.setSetting('model', ev.target.value);
-    populateEffortOptions(ev.target.value);
-    memory.setSetting('effort', $('set-effort').value);
+    const pid = currentProvider();
+    if (pid === 'anthropic') {
+      memory.setSetting('model', ev.target.value);
+      populateEffortOptions(ev.target.value);
+      memory.setSetting('effort', $('set-effort').value);
+    } else {
+      const models = { ...(memory.settings.providerModels || {}) };
+      models[pid] = ev.target.value;
+      memory.setSetting('providerModels', models);
+    }
     applySettings();
   });
   $('set-effort').addEventListener('change', (ev) => {
@@ -4663,6 +5092,13 @@ function applyModelReadout() {
   if (kind === 'rules') {
     el.statModel.textContent = 'offline (rules)';
     el.statLink.textContent = 'no key';
+    return;
+  }
+  const pid = currentProvider();
+  if (pid !== 'anthropic') {
+    const model = (memory.settings.providerModels || {})[pid] || providerFor(pid)?.models?.[0] || '';
+    el.statModel.textContent = model;
+    el.statLink.textContent = providerFor(pid)?.label?.split(' ')[0].toLowerCase() || pid;
     return;
   }
   const s = memory.settings;

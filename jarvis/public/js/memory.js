@@ -20,7 +20,10 @@ const DEFAULTS = {
     webSearch: false,
     name: '',
     clapToDictate: true,     // double-clap starts a capture
-    brain: 'auto',           // auto | claude | local (in-browser LLM) | rules
+    brain: 'auto',           // auto | api | local (in-browser LLM) | rules
+    provider: 'anthropic',   // which API provider when brain is 'api'
+    providerKeys: {},        // per-provider API keys, this browser only
+    providerModels: {},      // per-provider chosen model
     connectors: {},          // per-connector on/off; empty means all on
     localModel: '',          // override the in-browser model id
     localSpeed: 'balanced',  // fastest | balanced | smartest

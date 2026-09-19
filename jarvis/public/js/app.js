@@ -13,6 +13,7 @@ import { Wave } from './wave.js';
 import { MindView } from './mind.js';
 import { LocalBrain, webGpuSupported, SPEED_TIERS } from './localbrain.js';
 import { CONNECTORS } from './connectors.js';
+import { PROVIDERS, providerFor, ProviderBrain } from './providers.js';
 import { createTools, fmtDuration } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
@@ -197,6 +198,7 @@ function tickClock() {
 
 const brain = new Brain({ proxy: false, getSettings: () => memory.settings });
 const offlineBrain = new OfflineBrain();
+const providerBrain = new ProviderBrain({ getSettings: () => memory.settings });
 const localBrain = new LocalBrain({
   getSettings: () => memory.settings,
   on: {
@@ -229,21 +231,31 @@ function brainKind() {
   const pref = memory.settings.brain || 'auto';
   if (pref === 'local') return 'local';
   if (pref === 'rules') return 'rules';
-  if (pref === 'claude') return 'claude';
-  return proxyMode || memory.settings.apiKey ? 'claude' : 'rules';
+  if (pref === 'api' || pref === 'claude') return 'api';
+  return proxyMode || hasProviderKey() ? 'api' : 'rules';
+}
+
+/** Is there a usable key for the selected provider? */
+function hasProviderKey() {
+  const s = memory.settings;
+  const id = s.provider || 'anthropic';
+  if (providerFor(id)?.noKey) return true;
+  if (id === 'anthropic') return Boolean(s.apiKey || (s.providerKeys || {}).anthropic);
+  return Boolean((s.providerKeys || {})[id]);
 }
 
 /** True when no Anthropic key is in play, whatever is driving instead. */
 function isOffline() {
-  return brainKind() !== 'claude';
+  return brainKind() !== 'api';
 }
 
 /** The engine this turn should use. */
 function engine() {
   const kind = brainKind();
   if (kind === 'local') return localBrain;
-  if (kind === 'claude') return brain;
-  return offlineBrain;
+  if (kind !== 'api') return offlineBrain;
+  // Anthropic has its own client; everything else speaks the OpenAI shape.
+  return (memory.settings.provider || 'anthropic') === 'anthropic' ? brain : providerBrain;
 }
 
 const voice = new Voice({
@@ -523,16 +535,60 @@ function loadVoiceOptions() {
   }
 }
 
-/** Fill the model picker from Brain's roster. */
-function populateModelOptions() {
-  const select = $('set-model');
-  select.innerHTML = '';
-  for (const [id, meta] of Object.entries(Brain.models)) {
+/** Fill the provider picker. */
+function populateProviderOptions() {
+  const select = $('set-provider');
+  if (select.options.length) return;
+  for (const [id, meta] of Object.entries(PROVIDERS)) {
     const opt = document.createElement('option');
     opt.value = id;
     opt.textContent = meta.label;
     select.append(opt);
   }
+}
+
+/** Current provider id, defaulting to Claude. */
+function currentProvider() {
+  return memory.settings.provider || 'anthropic';
+}
+
+/** Fill the model picker for whichever provider is selected. */
+function populateModelOptions() {
+  const select = $('set-model');
+  const id = currentProvider();
+  select.innerHTML = '';
+
+  const entries = id === 'anthropic'
+    ? Object.entries(Brain.models).map(([value, meta]) => [value, meta.label])
+    : (providerFor(id)?.models || []).map((m) => [m, m]);
+
+  for (const [value, label] of entries) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    select.append(opt);
+  }
+
+  const chosen = id === 'anthropic'
+    ? memory.settings.model
+    : (memory.settings.providerModels || {})[id];
+  if (chosen && entries.some(([v]) => v === chosen)) select.value = chosen;
+  else if (entries.length) select.value = entries[0][0];
+}
+
+/** Read/write the key for the selected provider. */
+function providerKey(id) {
+  const s = memory.settings;
+  if (id === 'anthropic') return (s.providerKeys || {}).anthropic || s.apiKey || '';
+  return (s.providerKeys || {})[id] || '';
+}
+
+function setProviderKey(id, value) {
+  const keys = { ...(memory.settings.providerKeys || {}) };
+  keys[id] = value;
+  memory.setSetting('providerKeys', keys);
+  // Keep the legacy field in step so existing Anthropic setups keep working.
+  if (id === 'anthropic') memory.setSetting('apiKey', value);
 }
 
 /** Fill the effort picker for whichever model is selected. */
@@ -564,10 +620,28 @@ function populateEffortOptions(model) {
 /** Reflect the current settings into the dialog controls (also after serious mode). */
 function syncSettingsControls() {
   const s = memory.settings;
-  $('set-key').value = s.apiKey;
-  $('set-model').value = s.model;
-  populateEffortOptions(s.model);
-  $('set-effort').value = Brain.effortsFor(s.model).includes(s.effort) ? s.effort : 'low';
+  populateProviderOptions();
+  const pid = currentProvider();
+  const provider = providerFor(pid);
+  const cloud = brainKind() === 'api';
+
+  $('set-provider').value = pid;
+  $('set-key').value = providerKey(pid);
+  $('set-key').placeholder = provider?.keyPrefix ? `${provider.keyPrefix}...` : 'paste your key';
+  $('key-where').textContent = provider?.noKey ? '(no key needed)' : '';
+  $('field-provider').style.display = cloud ? '' : 'none';
+  // In proxy mode the server holds the Anthropic key, so don't ask for one.
+  const serverHoldsKey = proxyMode && pid === 'anthropic';
+  $('field-key').style.display = cloud && !provider?.noKey && !serverHoldsKey ? '' : 'none';
+
+  populateModelOptions();
+  // Effort is an Anthropic concept; hide it for everyone else.
+  const anthropic = pid === 'anthropic';
+  $('field-effort').style.display = cloud && anthropic ? '' : 'none';
+  if (anthropic) {
+    populateEffortOptions(s.model);
+    $('set-effort').value = Brain.effortsFor(s.model).includes(s.effort) ? s.effort : 'low';
+  }
   $('set-wake').value = s.wakeWord;
   $('set-name').value = s.name;
   $('set-speak').checked = s.speak;
@@ -586,8 +660,7 @@ function syncSettingsControls() {
   $('field-speed').style.display = brainKind() === 'local' ? '' : 'none';
   $('set-brain').value = s.brain;
   $('brain-note').textContent = webGpuSupported() ? '' : '(local AI needs WebGPU — not available here)';
-  const claudeRows = brainKind() === 'claude';
-  $('field-model').style.display = claudeRows ? '' : 'none';
+  $('field-model').style.display = cloud ? '' : 'none';
   $('set-engine').value = s.speechEngine;
   $('engine-note').textContent = Voice.webSpeechSupported ? '' : '(browser engine unavailable here)';
   $('set-rate').value = s.rate;
@@ -599,10 +672,6 @@ function wireSettings() {
   populateModelOptions();
   syncSettingsControls();
 
-  if (proxyMode) {
-    $('field-key').style.display = 'none';
-  }
-
   const bind = (id, key, read = (e) => e.value) => {
     $(id).addEventListener('change', (ev) => {
       memory.setSetting(key, read(ev.target));
@@ -610,7 +679,6 @@ function wireSettings() {
     });
   };
 
-  bind('set-key', 'apiKey');
   bind('set-wake', 'wakeWord');
   bind('set-name', 'name');
   bind('set-voice', 'voiceURI');
@@ -655,11 +723,33 @@ function wireSettings() {
     voice.reloadEngine();
   });
 
+  $('set-key').addEventListener('change', (ev) => {
+    setProviderKey(currentProvider(), ev.target.value.trim());
+    applySettings();
+  });
+
+  $('set-provider').addEventListener('change', (ev) => {
+    memory.setSetting('provider', ev.target.value);
+    syncSettingsControls();
+    applyModelReadout();
+    const p = providerFor(ev.target.value);
+    if (p && p.browser === false && !providerKey(ev.target.value)) {
+      toast(`${p.label} often blocks browser requests — OpenRouter is the easy alternative.`);
+    }
+  });
+
   // Changing the model re-derives which effort levels are on offer.
   $('set-model').addEventListener('change', (ev) => {
-    memory.setSetting('model', ev.target.value);
-    populateEffortOptions(ev.target.value);
-    memory.setSetting('effort', $('set-effort').value);
+    const pid = currentProvider();
+    if (pid === 'anthropic') {
+      memory.setSetting('model', ev.target.value);
+      populateEffortOptions(ev.target.value);
+      memory.setSetting('effort', $('set-effort').value);
+    } else {
+      const models = { ...(memory.settings.providerModels || {}) };
+      models[pid] = ev.target.value;
+      memory.setSetting('providerModels', models);
+    }
     applySettings();
   });
   $('set-effort').addEventListener('change', (ev) => {
@@ -700,6 +790,13 @@ function applyModelReadout() {
   if (kind === 'rules') {
     el.statModel.textContent = 'offline (rules)';
     el.statLink.textContent = 'no key';
+    return;
+  }
+  const pid = currentProvider();
+  if (pid !== 'anthropic') {
+    const model = (memory.settings.providerModels || {})[pid] || providerFor(pid)?.models?.[0] || '';
+    el.statModel.textContent = model;
+    el.statLink.textContent = providerFor(pid)?.label?.split(' ')[0].toLowerCase() || pid;
     return;
   }
   const s = memory.settings;

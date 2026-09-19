@@ -24,6 +24,7 @@ const SHELL = [
   './js/offline.js',
   './js/localbrain.js',
   './js/connectors.js',
+  './js/providers.js',
   './js/clap.js',
   './js/recognizer.js',
   './js/voice.js',
