@@ -7,12 +7,21 @@
 # Run it from the Actions tab (Run workflow). The APK lands as a build artifact
 # you can download and install.
 #
-# Bubblewrap's CLI is interactive: left to itself it stops to ask whether it
-# should download a JDK and an Android SDK. On a runner there is nobody to
-# answer, so we install both up front and hand Bubblewrap their paths in
-# ~/.bubblewrap/config.json — then it never asks. The remaining prompts are
-# field confirmations whose defaults come from the web manifest, so an endless
-# stream of blank lines (`yes ''`) accepts them all.
+# Bubblewrap's CLI is interactive, which takes some care on a runner where
+# nobody can answer it:
+#
+#   * It offers to download a JDK and an Android SDK. Both are installed up
+#     front and handed to it in ~/.bubblewrap/config.json, so it never asks.
+#   * If it cannot find a signing key it walks you through creating one, and
+#     those fields reject an empty answer. The key is therefore created first,
+#     at exactly the path its prompt defaults to — the working directory, which
+#     is why `bubblewrap init` runs inside twa/ rather than being pointed at it
+#     with --directory.
+#   * Everything left is a field confirmation defaulted from the web manifest,
+#     so a fixed run of blank lines accepts them. It is deliberately *fixed*:
+#     when the answers run out the CLI sees EOF and exits, whereas an endless
+#     stream (`yes ''`) spins forever against any field that rejects a blank.
+#     The step timeouts are the backstop for that.
 name: Build Android APK
 
 on:
@@ -31,6 +40,7 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -72,33 +82,50 @@ jobs:
 
       # A debug keystore keeps this reproducible without committing secrets.
       # For a Play Store release you would sign with your own upload key.
-      # The path and alias match Bubblewrap's own defaults so the prompts for
-      # them can be accepted blank, and so it never offers to create a key.
+      # It goes in twa/ under the default name and alias, which is where
+      # `bubblewrap init` looks: found, it never offers to generate one, and the
+      # required fields that come with that offer never get asked.
       - name: Create a signing key
         run: |
+          mkdir -p twa
           keytool -genkeypair -v \
-            -keystore "$GITHUB_WORKSPACE/android.keystore" -alias android \
+            -keystore twa/android.keystore -alias android \
             -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass jarvis123 -keypass jarvis123 \
             -dname "CN=JARVIS, OU=Dev, O=JARVIS, L=., S=., C=US"
 
       - name: Initialise the TWA project
+        working-directory: twa
+        timeout-minutes: 8
         run: |
-          yes '' | bubblewrap init \
+          printf '\n%.0s' $(seq 80) | bubblewrap init \
             --manifest "https://${{ inputs.host }}${{ inputs.path }}manifest.webmanifest" \
-            --directory twa \
             --chromeosonly false \
             --alphaDependencies false \
             --skipPwaValidation true
           echo '--- twa-manifest.json ---'
-          cat twa/twa-manifest.json
+          cat twa-manifest.json
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: jarvis123
           BUBBLEWRAP_KEY_PASSWORD: jarvis123
 
+      # Whatever the prompts settled on, sign with the key made above.
+      - name: Point the project at the signing key
+        working-directory: twa
+        run: |
+          node -e '
+            const fs = require("fs");
+            const m = JSON.parse(fs.readFileSync("twa-manifest.json", "utf8"));
+            m.signingKey = { path: process.cwd() + "/android.keystore", alias: "android" };
+            fs.writeFileSync("twa-manifest.json", JSON.stringify(m, null, 2));
+          '
+
+      # </dev/null so an unexpected question fails the step straight away
+      # rather than waiting on an answer that is never coming.
       - name: Build the APK
         working-directory: twa
-        run: yes '' | bubblewrap build --skipPwaValidation
+        timeout-minutes: 20
+        run: bubblewrap build --skipPwaValidation < /dev/null
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: jarvis123
           BUBBLEWRAP_KEY_PASSWORD: jarvis123
@@ -107,8 +134,9 @@ jobs:
         if: always()
         run: |
           echo "Add this SHA-256 to assetlinks.json so the app opens without a URL bar:"
-          keytool -list -v -keystore "$GITHUB_WORKSPACE/android.keystore" -alias android \
+          keytool -list -v -keystore twa/android.keystore -alias android \
             -storepass jarvis123 | grep 'SHA256:' || true
+
 
       - uses: actions/upload-artifact@v4
         with:
