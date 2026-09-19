@@ -844,6 +844,24 @@ body[data-state="thinking"] .composer {
 }
 .conn__signin:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); color: #fff; }
 
+/* The key tester's readout: small, wrapping, and able to show a whole error
+   message from a provider without pushing the dialog out of shape. */
+.key-test {
+  display: block;
+  margin-top: 0.4rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--dim, #8aa);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+#test-key-btn {
+  margin-top: 0.5rem;
+  align-self: flex-start;
+}
+
 </style>
 </head>
 <body>
@@ -1009,6 +1027,8 @@ body[data-state="thinking"] .composer {
       <span>API key <small id="key-where"></small></span>
       <input type="password" id="set-key" placeholder="paste your key" />
       <small id="key-note">Stored in this browser only, never sent anywhere but that provider.</small>
+      <button type="button" id="test-key-btn">Test key</button>
+      <small id="key-test-result" class="key-test"></small>
     </label>
 
     <label class="field" id="field-speed">
@@ -1377,6 +1397,76 @@ function sanitize(messages, limit = 40) {
   return out;
 }
 // --- end history.js ---
+
+// --- apikey.js ---
+/**
+ * API keys, cleaned and checked.
+ *
+ * A key is copied by hand, and copying by hand goes wrong in ways that are
+ * invisible in a password field: a key wrapped across two lines in a terminal
+ * or a chat message brings a newline back with it, and one pasted from a
+ * password manager often arrives with a space on the end. The result is a 401
+ * that looks exactly like a bad key, on a key that is perfectly good
+ * everywhere it was pasted cleanly.
+ *
+ * So keys are stripped of every whitespace character rather than trimmed —
+ * no API key contains whitespace, so removing it can only help — and that
+ * happens on the way in *and* on the way out, which repairs one already saved.
+ */
+
+/** Remove every whitespace character, wherever it is in the string. */
+function cleanKey(value) {
+  return String(value ?? '').replace(/\s+/g, '');
+}
+
+/** True if cleaning would change it — i.e. the paste picked something up. */
+function keyWasDirty(value) {
+  const raw = String(value ?? '');
+  return raw.length > 0 && raw !== cleanKey(raw);
+}
+
+/**
+ * Describe a key without ever showing it. Enough to spot a truncated paste or
+ * the wrong kind of key, safe to put on screen or in a log.
+ */
+function describeKey(value, expectedPrefix = '') {
+  const key = cleanKey(value);
+  if (!key) return 'no key set';
+  const shape = `${key.length} characters, starts ${key.slice(0, 8)}…, ends …${key.slice(-4)}`;
+  if (expectedPrefix && !key.startsWith(expectedPrefix)) {
+    return `${shape} — expected it to start with "${expectedPrefix}"`;
+  }
+  return shape;
+}
+
+/**
+ * Turn an HTTP status and the provider's own error body into something worth
+ * reading. The status alone cannot tell you whether the key is wrong, expired,
+ * out of credit or simply not allowed to use the model you picked — the body
+ * can, so it is kept rather than thrown away.
+ */
+function explainAuthFailure(status, detail, keyDescription) {
+  let reason = '';
+  try {
+    const parsed = JSON.parse(detail);
+    reason = parsed?.error?.message || parsed?.error?.type || '';
+  } catch {
+    reason = String(detail || '').slice(0, 200);
+  }
+
+  const said = reason ? ` The API said: ${reason}` : '';
+  const key = keyDescription ? ` Your key: ${keyDescription}.` : '';
+
+  if (status === 401) {
+    return `The API key was rejected (401).${said}${key} ` +
+      'Check it is copied whole, with nothing missing from either end.';
+  }
+  if (status === 403) {
+    return `That key is not allowed to do this (403).${said}${key}`;
+  }
+  return `Authentication failed (${status}).${said}${key}`;
+}
+// --- end apikey.js ---
 
 // --- connectors.js ---
 /**
@@ -2180,6 +2270,7 @@ const API_URL = 'https://api.anthropic.com/v1/messages';
 const API_VERSION = '2023-06-01';
 
 /** Deliberately short: this is a spoken assistant, not an essay writer. */
+
 const MAX_TOKENS = 4096;
 
 /**
@@ -2265,7 +2356,10 @@ class Brain {
         },
       ];
     }
-    if (!settings.apiKey) {
+    // Clean here too, not just where it is saved: a key stored by an older
+    // build, or pasted with a line break through it, is repaired on use.
+    const apiKey = cleanKey(settings.apiKey);
+    if (!apiKey) {
       throw new Error('No API key. Add one in settings, or start the server with ANTHROPIC_API_KEY set.');
     }
     return [
@@ -2274,7 +2368,7 @@ class Brain {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-api-key': settings.apiKey,
+          'x-api-key': apiKey,
           'anthropic-version': API_VERSION,
           // Required to call the API straight from a browser.
           'anthropic-dangerous-direct-browser-access': 'true',
@@ -2310,7 +2404,11 @@ class Brain {
     } catch {
       // Non-JSON error body; use it as-is.
     }
-    if (status === 401) return 'The API key was rejected (401). Check it in settings.';
+    // A bare "rejected" is useless when the key looks fine: the body says
+    // whether it is wrong, expired, or simply not allowed to use this model.
+    if (status === 401 || status === 403) {
+      return explainAuthFailure(status, detail, describeKey(this.getSettings().apiKey, 'sk-ant-'));
+    }
     if (status === 429) return 'Rate limited (429). Give it a moment and try again.';
     if (status === 501) return String(message);
     return `API error ${status}: ${message || 'no detail'}`;
@@ -5510,6 +5608,46 @@ function populateModelOptions() {
   else if (entries.length) select.value = entries[0][0];
 }
 
+/**
+ * Send the smallest possible request and report exactly what came back. This
+ * goes straight to the provider rather than through the brain, so it tests the
+ * key and nothing else — no tools, no history, no model features.
+ */
+async function testCurrentKey() {
+  const pid = currentProvider();
+  const key = cleanKey(providerKey(pid));
+  const shape = describeKey(key, pid === 'anthropic' ? 'sk-ant-' : '');
+
+  if (pid !== 'anthropic') {
+    return `Key looks like: ${shape}. Testing is only wired up for Claude so far.`;
+  }
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'hi' }],
+    }),
+  });
+
+  if (res.ok) return `Key works. (${shape})`;
+  const detail = await res.text().catch(() => '');
+  let reason = detail;
+  try {
+    reason = JSON.parse(detail)?.error?.message || detail;
+  } catch {
+    // Keep the raw body.
+  }
+  return `Rejected with ${res.status}: ${reason}\n(${shape})`;
+}
+
 /** Read/write the key for the selected provider. */
 function providerKey(id) {
   const s = memory.settings;
@@ -5658,7 +5796,14 @@ function wireSettings() {
   });
 
   $('set-key').addEventListener('change', (ev) => {
-    setProviderKey(currentProvider(), ev.target.value.trim());
+    // Strip every whitespace character, not just the ends: a key copied out of
+    // a wrapped terminal or chat window carries a line break through its
+    // middle, which looks like nothing at all in a password field.
+    if (keyWasDirty(ev.target.value)) {
+      toast('Removed stray spaces from that key.');
+    }
+    ev.target.value = cleanKey(ev.target.value);
+    setProviderKey(currentProvider(), ev.target.value);
     applySettings();
   });
 
@@ -5706,6 +5851,34 @@ function wireSettings() {
   // Hand the brain over to whatever else is running JARVIS — the desktop MCP
   // server takes this file as-is. Facts and tasks only: the settings hold API
   // keys and the history is this browser's business.
+  // Answering "is it my key or is it you?" without needing anyone to read a
+  // stack trace. One minimal call, and whatever the provider says, verbatim.
+  $('test-key-btn').addEventListener('click', async () => {
+    const button = $('test-key-btn');
+    const out = $('key-test-result');
+    const pid = currentProvider();
+    const key = cleanKey(providerKey(pid));
+
+    out.textContent = describeKey(key, pid === 'anthropic' ? 'sk-ant-' : '');
+    if (!key && !proxyMode) {
+      out.textContent = 'No key set for this provider.';
+      return;
+    }
+
+    button.disabled = true;
+    const previous = button.textContent;
+    button.textContent = 'Testing…';
+    try {
+      const result = await testCurrentKey();
+      out.textContent = result;
+    } catch (err) {
+      out.textContent = `Could not reach the provider: ${err.message}`;
+    } finally {
+      button.disabled = false;
+      button.textContent = previous;
+    }
+  });
+
   el.exportBtn.addEventListener('click', () => {
     const brain = { facts: memory.facts, tasks: memory.tasks, exportedAt: new Date().toISOString() };
     const url = URL.createObjectURL(

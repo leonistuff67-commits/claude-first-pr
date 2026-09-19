@@ -14,6 +14,8 @@ const API_URL = 'https://api.anthropic.com/v1/messages';
 const API_VERSION = '2023-06-01';
 
 /** Deliberately short: this is a spoken assistant, not an essay writer. */
+import { cleanKey, describeKey, explainAuthFailure } from './apikey.js';
+
 const MAX_TOKENS = 4096;
 
 /**
@@ -99,7 +101,10 @@ export class Brain {
         },
       ];
     }
-    if (!settings.apiKey) {
+    // Clean here too, not just where it is saved: a key stored by an older
+    // build, or pasted with a line break through it, is repaired on use.
+    const apiKey = cleanKey(settings.apiKey);
+    if (!apiKey) {
       throw new Error('No API key. Add one in settings, or start the server with ANTHROPIC_API_KEY set.');
     }
     return [
@@ -108,7 +113,7 @@ export class Brain {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-api-key': settings.apiKey,
+          'x-api-key': apiKey,
           'anthropic-version': API_VERSION,
           // Required to call the API straight from a browser.
           'anthropic-dangerous-direct-browser-access': 'true',
@@ -144,7 +149,11 @@ export class Brain {
     } catch {
       // Non-JSON error body; use it as-is.
     }
-    if (status === 401) return 'The API key was rejected (401). Check it in settings.';
+    // A bare "rejected" is useless when the key looks fine: the body says
+    // whether it is wrong, expired, or simply not allowed to use this model.
+    if (status === 401 || status === 403) {
+      return explainAuthFailure(status, detail, describeKey(this.getSettings().apiKey, 'sk-ant-'));
+    }
     if (status === 429) return 'Rate limited (429). Give it a moment and try again.';
     if (status === 501) return String(message);
     return `API error ${status}: ${message || 'no detail'}`;

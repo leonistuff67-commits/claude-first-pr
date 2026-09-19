@@ -17,6 +17,7 @@ import { PROVIDERS, providerFor, ProviderBrain } from './providers.js';
 import { Gmail, formatInbox } from './gmail.js';
 import { createTools, fmtDuration } from './tools.js';
 import { sanitize, repair } from './history.js';
+import { cleanKey, keyWasDirty, describeKey } from './apikey.js';
 
 const $ = (id) => document.getElementById(id);
 const MAX_TOOL_ROUNDS = 6;
@@ -579,6 +580,46 @@ function populateModelOptions() {
   else if (entries.length) select.value = entries[0][0];
 }
 
+/**
+ * Send the smallest possible request and report exactly what came back. This
+ * goes straight to the provider rather than through the brain, so it tests the
+ * key and nothing else — no tools, no history, no model features.
+ */
+async function testCurrentKey() {
+  const pid = currentProvider();
+  const key = cleanKey(providerKey(pid));
+  const shape = describeKey(key, pid === 'anthropic' ? 'sk-ant-' : '');
+
+  if (pid !== 'anthropic') {
+    return `Key looks like: ${shape}. Testing is only wired up for Claude so far.`;
+  }
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1,
+      messages: [{ role: 'user', content: 'hi' }],
+    }),
+  });
+
+  if (res.ok) return `Key works. (${shape})`;
+  const detail = await res.text().catch(() => '');
+  let reason = detail;
+  try {
+    reason = JSON.parse(detail)?.error?.message || detail;
+  } catch {
+    // Keep the raw body.
+  }
+  return `Rejected with ${res.status}: ${reason}\n(${shape})`;
+}
+
 /** Read/write the key for the selected provider. */
 function providerKey(id) {
   const s = memory.settings;
@@ -727,7 +768,14 @@ function wireSettings() {
   });
 
   $('set-key').addEventListener('change', (ev) => {
-    setProviderKey(currentProvider(), ev.target.value.trim());
+    // Strip every whitespace character, not just the ends: a key copied out of
+    // a wrapped terminal or chat window carries a line break through its
+    // middle, which looks like nothing at all in a password field.
+    if (keyWasDirty(ev.target.value)) {
+      toast('Removed stray spaces from that key.');
+    }
+    ev.target.value = cleanKey(ev.target.value);
+    setProviderKey(currentProvider(), ev.target.value);
     applySettings();
   });
 
@@ -775,6 +823,34 @@ function wireSettings() {
   // Hand the brain over to whatever else is running JARVIS — the desktop MCP
   // server takes this file as-is. Facts and tasks only: the settings hold API
   // keys and the history is this browser's business.
+  // Answering "is it my key or is it you?" without needing anyone to read a
+  // stack trace. One minimal call, and whatever the provider says, verbatim.
+  $('test-key-btn').addEventListener('click', async () => {
+    const button = $('test-key-btn');
+    const out = $('key-test-result');
+    const pid = currentProvider();
+    const key = cleanKey(providerKey(pid));
+
+    out.textContent = describeKey(key, pid === 'anthropic' ? 'sk-ant-' : '');
+    if (!key && !proxyMode) {
+      out.textContent = 'No key set for this provider.';
+      return;
+    }
+
+    button.disabled = true;
+    const previous = button.textContent;
+    button.textContent = 'Testing…';
+    try {
+      const result = await testCurrentKey();
+      out.textContent = result;
+    } catch (err) {
+      out.textContent = `Could not reach the provider: ${err.message}`;
+    } finally {
+      button.disabled = false;
+      button.textContent = previous;
+    }
+  });
+
   el.exportBtn.addEventListener('click', () => {
     const brain = { facts: memory.facts, tasks: memory.tasks, exportedAt: new Date().toISOString() };
     const url = URL.createObjectURL(

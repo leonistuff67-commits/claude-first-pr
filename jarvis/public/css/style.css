@@ -830,3 +830,21 @@ body[data-state="thinking"] .composer {
   cursor: pointer;
 }
 .conn__signin:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); color: #fff; }
+
+/* The key tester's readout: small, wrapping, and able to show a whole error
+   message from a provider without pushing the dialog out of shape. */
+.key-test {
+  display: block;
+  margin-top: 0.4rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--dim, #8aa);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+#test-key-btn {
+  margin-top: 0.5rem;
+  align-self: flex-start;
+}
