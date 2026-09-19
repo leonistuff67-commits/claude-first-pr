@@ -1,11 +1,20 @@
 /**
  * Service worker: makes JARVIS installable and fully offline.
  *
- * The app shell (HTML, CSS, JS modules, icons) is precached on install and
- * served cache-first, so once installed JARVIS opens with no network at all.
- * API calls to Anthropic are never cached — they're always live.
+ * Strategy matters here. An earlier version cached the app shell cache-first
+ * with a fixed cache name, which meant an installed copy kept serving the old
+ * app forever and never picked up updates. So:
+ *
+ *   - Same-origin app files (HTML/CSS/JS/manifest): NETWORK-FIRST. Online you
+ *     always get the current build; offline you fall back to the cached copy.
+ *   - Icons and other immutable assets: cache-first, they rarely change.
+ *   - Cross-origin (the API, CDN libraries, model weights): never touched.
+ *
+ * Bump CACHE whenever the shell changes shape; old caches are purged on
+ * activate.
  */
-const CACHE = 'jarvis-v2';
+const CACHE = 'jarvis-v3';
+
 const SHELL = [
   './',
   './index.html',
@@ -13,6 +22,11 @@ const SHELL = [
   './js/app.js',
   './js/brain.js',
   './js/offline.js',
+  './js/localbrain.js',
+  './js/connectors.js',
+  './js/apps.js',
+  './js/providers.js',
+  './js/gmail.js',
   './js/clap.js',
   './js/recognizer.js',
   './js/voice.js',
@@ -26,9 +40,15 @@ const SHELL = [
   './icons/icon-512.png',
 ];
 
+/** Assets safe to serve straight from cache. */
+const isImmutable = (pathname) => /\/icons\/|\.(png|svg|woff2?)$/i.test(pathname);
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()),
+    caches.open(CACHE)
+      // Don't let one missing file abort the whole install.
+      .then((cache) => Promise.allSettled(SHELL.map((url) => cache.add(url))))
+      .then(() => self.skipWaiting()),
   );
 });
 
@@ -40,30 +60,42 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+self.addEventListener('message', (event) => {
+  // Lets the page force an update without waiting for a second reload.
+  if (event.data === 'skip-waiting') self.skipWaiting();
+});
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
-  const url = new URL(request.url);
-
-  // Never touch the API or the local proxy — always live.
-  if (url.hostname.endsWith('anthropic.com') || url.pathname.startsWith('/api/')) {
-    return;
-  }
   if (request.method !== 'GET') return;
 
-  // Cache-first for the app shell, falling back to the network and caching new
-  // same-origin GETs as they're seen.
+  const url = new URL(request.url);
+  // The API, CDN libraries and model weights are never our business.
+  if (url.origin !== self.location.origin) return;
+
+  if (isImmutable(url.pathname)) {
+    event.respondWith(
+      caches.match(request).then((hit) => hit || fetch(request).then((res) => {
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((cache) => cache.put(request, copy));
+        }
+        return res;
+      })),
+    );
+    return;
+  }
+
+  // Network-first for everything else, so updates land immediately.
   event.respondWith(
-    caches.match(request).then((hit) => {
-      if (hit) return hit;
-      return fetch(request)
-        .then((res) => {
-          if (res.ok && url.origin === self.location.origin) {
-            const copy = res.clone();
-            caches.open(CACHE).then((cache) => cache.put(request, copy));
-          }
-          return res;
-        })
-        .catch(() => hit);
-    }),
+    fetch(request)
+      .then((res) => {
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((cache) => cache.put(request, copy));
+        }
+        return res;
+      })
+      .catch(() => caches.match(request).then((hit) => hit || caches.match('./index.html'))),
   );
 });

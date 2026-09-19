@@ -81,7 +81,11 @@
   <!-- right column ------------------------------------------------------ -->
   <aside class="panel panel--right">
     <section class="block">
-      <h2 class="block__title">Tasks <span class="badge" id="task-count">0</span></h2>
+      <h2 class="block__title">
+        Tasks
+        <button type="button" class="block__action" id="conn-btn" title="Connectors">links</button>
+        <span class="badge" id="task-count">0</span>
+      </h2>
       <ul class="list" id="tasks"><li class="list__empty">nothing queued</li></ul>
     </section>
 
@@ -116,6 +120,24 @@
   </div>
 </div>
 
+<!-- connectors ------------------------------------------------------------ -->
+<div class="mind conn" id="conn" hidden>
+  <header class="mind__bar">
+    <div class="mind__title">
+      <span class="mind__eyebrow">connectors</span>
+      <h2>Hand-offs</h2>
+    </div>
+    <button type="button" class="mind__close" id="conn-close" aria-label="Close">esc</button>
+  </header>
+
+  <p class="conn__lead">
+    JARVIS writes it, then opens the real app with everything filled in — you press send.
+    Nothing is sent on your behalf, and no accounts are connected.
+  </p>
+
+  <div class="conn__grid" id="conn-grid"></div>
+</div>
+
 <!-- boot overlay --------------------------------------------------------- -->
 <div class="boot" id="boot">
   <div class="boot__inner">
@@ -134,18 +156,40 @@
   <form method="dialog" class="settings__form" id="settings-form">
     <h2>Settings</h2>
 
+
+
+    <label class="field">
+      <span>Brain <small id="brain-note"></small></span>
+      <select id="set-brain">
+        <option value="auto">Automatic</option>
+        <option value="api">Cloud AI — pick a provider below, needs that provider's key</option>
+        <option value="local">Local AI — no key, runs in this browser (one-time download)</option>
+        <option value="rules">Offline rules — no key, instant, handles the basics</option>
+      </select>
+    </label>
+
+    <label class="field" id="field-provider">
+      <span>Provider</span>
+      <select id="set-provider"><!-- filled from PROVIDERS --></select>
+    </label>
+
     <label class="field" id="field-key">
-      <span>Anthropic API key</span>
-      <input type="password" id="set-key" placeholder="sk-ant-..." />
-      <small id="key-note">Stored in this browser only.</small>
+      <span>API key <small id="key-where"></small></span>
+      <input type="password" id="set-key" placeholder="paste your key" />
+      <small id="key-note">Stored in this browser only, never sent anywhere but that provider.</small>
     </label>
 
-    <label class="field">
+    <label class="field" id="field-speed">
+      <span>Local AI size <small>smaller is much faster</small></span>
+      <select id="set-speed"><!-- filled from SPEED_TIERS --></select>
+    </label>
+
+    <label class="field" id="field-model">
       <span>Model</span>
-      <select id="set-model"><!-- filled from Brain.models --></select>
+      <select id="set-model"><!-- filled per provider --></select>
     </label>
 
-    <label class="field">
+    <label class="field" id="field-effort">
       <span>Effort <small id="effort-note"></small></span>
       <select id="set-effort"><!-- filled per selected model --></select>
     </label>

@@ -15,6 +15,8 @@ export class Wave {
     this.gain = 0;          // 0..1 overall visibility, eased toward target
     this.target = 0;
     this.getSpectrum = () => this.data;
+    this.quiet = false;
+    this.frame = 0;
     this.#resize();
     window.addEventListener('resize', () => this.#resize());
   }
@@ -34,6 +36,11 @@ export class Wave {
     ];
   }
 
+  /** Drop to a trickle of frames so a local model can have the GPU. */
+  setQuiet(quiet) {
+    this.quiet = Boolean(quiet);
+  }
+
   bind(fn) {
     this.getSpectrum = fn;
   }
@@ -45,7 +52,8 @@ export class Wave {
 
   start() {
     const loop = () => {
-      this.#frame();
+      this.frame++;
+      if (!this.quiet || this.frame % 6 === 0) this.#frame();
       this.raf = requestAnimationFrame(loop);
     };
     loop();

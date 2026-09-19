@@ -50,7 +50,34 @@ test('a timer with no duration asks instead of guessing', () => {
   assert.ok(interpret('set a timer').text);
 });
 
-test('falls back to a spoken reply for anything it cannot do', () => {
+test('a question it cannot answer becomes a web search, not a shrug', () => {
   const reply = interpret('what is the airspeed velocity of an unladen swallow');
-  assert.ok(reply.text && !reply.tool);
+  assert.equal(reply.tool, 'search_web');
+  assert.match(reply.input.query, /airspeed velocity/);
+});
+
+test('falls back to a spoken reply for anything it cannot route', () => {
+  const reply = interpret('sing me a lullaby about quantum foam');
+  assert.ok(reply.text && !reply.tool, 'no tool fits, so it says so');
+});
+
+test('routes connector requests to the right hand-off', () => {
+  const email = interpret('email sam@example.com about moving the meeting');
+  assert.equal(email.tool, 'compose_email');
+  assert.equal(email.input.to, 'sam@example.com');
+  assert.match(email.input.body, /moving the meeting/);
+
+  assert.equal(interpret('directions to the hardware store').tool, 'get_directions');
+  assert.equal(interpret('directions to the hardware store').input.destination, 'the hardware store');
+
+  assert.equal(interpret('play lo-fi beats').tool, 'play_video');
+  assert.equal(interpret('look up how long to boil an egg').tool, 'search_web');
+
+  const tr = interpret('translate where is the station into japanese');
+  assert.equal(tr.tool, 'translate_text');
+  assert.equal(tr.input.to, 'japanese');
+});
+
+test('a timer is still a timer, not a video', () => {
+  assert.equal(interpret('put on a 5 minute timer').tool, 'set_timer');
 });

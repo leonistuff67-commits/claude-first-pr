@@ -11,6 +11,10 @@ import { Voice } from './voice.js';
 import { Orb } from './orb.js';
 import { Wave } from './wave.js';
 import { MindView } from './mind.js';
+import { LocalBrain, webGpuSupported, SPEED_TIERS } from './localbrain.js';
+import { CONNECTORS } from './connectors.js';
+import { PROVIDERS, providerFor, ProviderBrain } from './providers.js';
+import { Gmail, formatInbox } from './gmail.js';
 import { createTools, fmtDuration } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
@@ -32,6 +36,7 @@ const el = {
   mind: $('mind'), mindCanvas: $('mind-canvas'), mindSearch: $('mind-search'),
   mindClose: $('mind-close'), mindDetail: $('mind-detail'), mindStats: $('mind-stats'),
   brainBtn: $('brain-btn'),
+  conn: $('conn'), connGrid: $('conn-grid'), connBtn: $('conn-btn'), connClose: $('conn-close'),
 };
 
 let busy = false;
@@ -194,19 +199,64 @@ function tickClock() {
 
 const brain = new Brain({ proxy: false, getSettings: () => memory.settings });
 const offlineBrain = new OfflineBrain();
+const providerBrain = new ProviderBrain({ getSettings: () => memory.settings });
+const localBrain = new LocalBrain({
+  getSettings: () => memory.settings,
+  on: {
+    progress(fraction, text) {
+      const pct = Math.round((fraction || 0) * 100);
+      el.statModel.textContent = `local AI ${pct}%`;
+      setState('thinking', 'loading model');
+      if (pct === 0 && text) toast('Downloading the local AI — one time, then it works offline.');
+    },
+    busy(on) {
+      // The model and the visuals were fighting over the same GPU.
+      orb.setQuiet(on);
+      wave.setQuiet(on);
+    },
+    ready(modelId) {
+      toast(`Local AI ready (${modelId.split('-').slice(0, 2).join(' ')}).`);
+      applyModelReadout();
+      if (!busy) setState('idle', 'standby');
+    },
+  },
+});
 
 /**
- * Offline when there's no way to reach the model — no server-side key and none
- * pasted in. Everything still works, driven by the local pattern-matcher, so
- * you can use JARVIS while you're between API keys.
+ * Which brain drives this turn.
+ *  claude — the real model, needs a key (or the server proxy)
+ *  local  — a language model running here in the browser, no key at all
+ *  rules  — the built-in pattern matcher, no key and no download
  */
+function brainKind() {
+  const pref = memory.settings.brain || 'auto';
+  if (pref === 'local') return 'local';
+  if (pref === 'rules') return 'rules';
+  if (pref === 'api' || pref === 'claude') return 'api';
+  return proxyMode || hasProviderKey() ? 'api' : 'rules';
+}
+
+/** Is there a usable key for the selected provider? */
+function hasProviderKey() {
+  const s = memory.settings;
+  const id = s.provider || 'anthropic';
+  if (providerFor(id)?.noKey) return true;
+  if (id === 'anthropic') return Boolean(s.apiKey || (s.providerKeys || {}).anthropic);
+  return Boolean((s.providerKeys || {})[id]);
+}
+
+/** True when no Anthropic key is in play, whatever is driving instead. */
 function isOffline() {
-  return !proxyMode && !memory.settings.apiKey;
+  return brainKind() !== 'api';
 }
 
 /** The engine this turn should use. */
 function engine() {
-  return isOffline() ? offlineBrain : brain;
+  const kind = brainKind();
+  if (kind === 'local') return localBrain;
+  if (kind !== 'api') return offlineBrain;
+  // Anthropic has its own client; everything else speaks the OpenAI shape.
+  return (memory.settings.provider || 'anthropic') === 'anthropic' ? brain : providerBrain;
 }
 
 const voice = new Voice({
@@ -261,7 +311,17 @@ const voice = new Voice({
   },
 });
 
+const gmail = new Gmail({
+  getSettings: () => memory.settings,
+  onSession() {
+    renderConnectors();
+    applyModelReadout();
+  },
+});
+
 const tools = createTools({
+  gmail,
+  formatInbox,
   say: (text) => voice.say(text),
   notify: (text) => toast(text),
   setAccent,
@@ -346,18 +406,30 @@ function buildSystemPrompt() {
 
   if (s.name) lines.push(`The user's name is ${s.name}.`);
 
+  // A small local model pays for every token of context in latency, so give it
+  // a much tighter brief than Claude gets.
+  const local = brainKind() === 'local';
+  const factLimit = local ? 8 : 40;
+  const taskLimit = local ? 5 : 20;
+
   const facts = memory.facts;
   if (facts.length) {
     lines.push('', 'What you already know about the user:');
-    for (const f of facts.slice(-40)) lines.push(`- ${f.text}`);
+    for (const f of facts.slice(-factLimit)) lines.push(`- ${f.text}`);
   }
 
   const open = memory.tasks.filter((t) => !t.done);
   if (open.length) {
     lines.push('', 'Open tasks on their board:');
-    for (const t of open.slice(-20)) lines.push(`- ${t.text}`);
+    for (const t of open.slice(-taskLimit)) lines.push(`- ${t.text}`);
   }
 
+  if (local) {
+    // Drop the long persona section; keep the rules that matter for behaviour.
+    return lines
+      .filter((l) => !l.startsWith('Personality:') && !l.startsWith('apologise'))
+      .join('\n');
+  }
   return lines.join('\n');
 }
 
@@ -474,16 +546,60 @@ function loadVoiceOptions() {
   }
 }
 
-/** Fill the model picker from Brain's roster. */
-function populateModelOptions() {
-  const select = $('set-model');
-  select.innerHTML = '';
-  for (const [id, meta] of Object.entries(Brain.models)) {
+/** Fill the provider picker. */
+function populateProviderOptions() {
+  const select = $('set-provider');
+  if (select.options.length) return;
+  for (const [id, meta] of Object.entries(PROVIDERS)) {
     const opt = document.createElement('option');
     opt.value = id;
     opt.textContent = meta.label;
     select.append(opt);
   }
+}
+
+/** Current provider id, defaulting to Claude. */
+function currentProvider() {
+  return memory.settings.provider || 'anthropic';
+}
+
+/** Fill the model picker for whichever provider is selected. */
+function populateModelOptions() {
+  const select = $('set-model');
+  const id = currentProvider();
+  select.innerHTML = '';
+
+  const entries = id === 'anthropic'
+    ? Object.entries(Brain.models).map(([value, meta]) => [value, meta.label])
+    : (providerFor(id)?.models || []).map((m) => [m, m]);
+
+  for (const [value, label] of entries) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    select.append(opt);
+  }
+
+  const chosen = id === 'anthropic'
+    ? memory.settings.model
+    : (memory.settings.providerModels || {})[id];
+  if (chosen && entries.some(([v]) => v === chosen)) select.value = chosen;
+  else if (entries.length) select.value = entries[0][0];
+}
+
+/** Read/write the key for the selected provider. */
+function providerKey(id) {
+  const s = memory.settings;
+  if (id === 'anthropic') return (s.providerKeys || {}).anthropic || s.apiKey || '';
+  return (s.providerKeys || {})[id] || '';
+}
+
+function setProviderKey(id, value) {
+  const keys = { ...(memory.settings.providerKeys || {}) };
+  keys[id] = value;
+  memory.setSetting('providerKeys', keys);
+  // Keep the legacy field in step so existing Anthropic setups keep working.
+  if (id === 'anthropic') memory.setSetting('apiKey', value);
 }
 
 /** Fill the effort picker for whichever model is selected. */
@@ -515,15 +631,47 @@ function populateEffortOptions(model) {
 /** Reflect the current settings into the dialog controls (also after serious mode). */
 function syncSettingsControls() {
   const s = memory.settings;
-  $('set-key').value = s.apiKey;
-  $('set-model').value = s.model;
-  populateEffortOptions(s.model);
-  $('set-effort').value = Brain.effortsFor(s.model).includes(s.effort) ? s.effort : 'low';
+  populateProviderOptions();
+  const pid = currentProvider();
+  const provider = providerFor(pid);
+  const cloud = brainKind() === 'api';
+
+  $('set-provider').value = pid;
+  $('set-key').value = providerKey(pid);
+  $('set-key').placeholder = provider?.keyPrefix ? `${provider.keyPrefix}...` : 'paste your key';
+  $('key-where').textContent = provider?.noKey ? '(no key needed)' : '';
+  $('field-provider').style.display = cloud ? '' : 'none';
+  // In proxy mode the server holds the Anthropic key, so don't ask for one.
+  const serverHoldsKey = proxyMode && pid === 'anthropic';
+  $('field-key').style.display = cloud && !provider?.noKey && !serverHoldsKey ? '' : 'none';
+
+  populateModelOptions();
+  // Effort is an Anthropic concept; hide it for everyone else.
+  const anthropic = pid === 'anthropic';
+  $('field-effort').style.display = cloud && anthropic ? '' : 'none';
+  if (anthropic) {
+    populateEffortOptions(s.model);
+    $('set-effort').value = Brain.effortsFor(s.model).includes(s.effort) ? s.effort : 'low';
+  }
   $('set-wake').value = s.wakeWord;
   $('set-name').value = s.name;
   $('set-speak').checked = s.speak;
   $('set-always').checked = s.alwaysListen;
   $('set-clap').checked = s.clapToDictate;
+  const speed = $('set-speed');
+  if (!speed.options.length) {
+    for (const tier of SPEED_TIERS) {
+      const opt = document.createElement('option');
+      opt.value = tier.id;
+      opt.textContent = tier.label;
+      speed.append(opt);
+    }
+  }
+  speed.value = s.localSpeed;
+  $('field-speed').style.display = brainKind() === 'local' ? '' : 'none';
+  $('set-brain').value = s.brain;
+  $('brain-note').textContent = webGpuSupported() ? '' : '(local AI needs WebGPU — not available here)';
+  $('field-model').style.display = cloud ? '' : 'none';
   $('set-engine').value = s.speechEngine;
   $('engine-note').textContent = Voice.webSpeechSupported ? '' : '(browser engine unavailable here)';
   $('set-rate').value = s.rate;
@@ -535,10 +683,6 @@ function wireSettings() {
   populateModelOptions();
   syncSettingsControls();
 
-  if (proxyMode) {
-    $('field-key').style.display = 'none';
-  }
-
   const bind = (id, key, read = (e) => e.value) => {
     $(id).addEventListener('change', (ev) => {
       memory.setSetting(key, read(ev.target));
@@ -546,7 +690,6 @@ function wireSettings() {
     });
   };
 
-  bind('set-key', 'apiKey');
   bind('set-wake', 'wakeWord');
   bind('set-name', 'name');
   bind('set-voice', 'voiceURI');
@@ -555,17 +698,69 @@ function wireSettings() {
   bind('set-clap', 'clapToDictate', (e) => e.checked);
   bind('set-accent', 'accent');
 
+  // Changing size means a different model, so drop the loaded one.
+  $('set-speed').addEventListener('change', (ev) => {
+    memory.setSetting('localSpeed', ev.target.value);
+    memory.setSetting('localModel', '');
+    localBrain.engine = null;
+    localBrain.modelId = null;
+    applyModelReadout();
+    toast('Size changed — the new model downloads on your next message.');
+  });
+
+  $('set-brain').addEventListener('change', async (ev) => {
+    memory.setSetting('brain', ev.target.value);
+    syncSettingsControls();
+    applyModelReadout();
+    if (ev.target.value === 'local' && !localBrain.ready) {
+      // Start the download now rather than stalling the first question.
+      try {
+        await localBrain.load();
+      } catch (err) {
+        // A toast can be overwritten by other notices, so leave a permanent
+        // explanation in the transcript too.
+        toast(err.message);
+        bubble('error', `Local AI unavailable — ${err.message} Falling back to offline rules.`);
+        memory.setSetting('brain', 'rules');
+        syncSettingsControls();
+        applyModelReadout();
+      }
+    }
+  });
+
   // Switching speech engine restarts recognition on the new one.
   $('set-engine').addEventListener('change', (ev) => {
     memory.setSetting('speechEngine', ev.target.value);
     voice.reloadEngine();
   });
 
+  $('set-key').addEventListener('change', (ev) => {
+    setProviderKey(currentProvider(), ev.target.value.trim());
+    applySettings();
+  });
+
+  $('set-provider').addEventListener('change', (ev) => {
+    memory.setSetting('provider', ev.target.value);
+    syncSettingsControls();
+    applyModelReadout();
+    const p = providerFor(ev.target.value);
+    if (p && p.browser === false && !providerKey(ev.target.value)) {
+      toast(`${p.label} often blocks browser requests — OpenRouter is the easy alternative.`);
+    }
+  });
+
   // Changing the model re-derives which effort levels are on offer.
   $('set-model').addEventListener('change', (ev) => {
-    memory.setSetting('model', ev.target.value);
-    populateEffortOptions(ev.target.value);
-    memory.setSetting('effort', $('set-effort').value);
+    const pid = currentProvider();
+    if (pid === 'anthropic') {
+      memory.setSetting('model', ev.target.value);
+      populateEffortOptions(ev.target.value);
+      memory.setSetting('effort', $('set-effort').value);
+    } else {
+      const models = { ...(memory.settings.providerModels || {}) };
+      models[pid] = ev.target.value;
+      memory.setSetting('providerModels', models);
+    }
     applySettings();
   });
   $('set-effort').addEventListener('change', (ev) => {
@@ -595,9 +790,24 @@ function wireSettings() {
 }
 
 function applyModelReadout() {
-  if (isOffline()) {
-    el.statModel.textContent = 'offline (local)';
+  const kind = brainKind();
+  if (kind === 'local') {
+    el.statModel.textContent = localBrain.ready
+      ? `local AI · ${(localBrain.modelId || '').split('-')[0] || 'ready'}`
+      : 'local AI (not loaded)';
     el.statLink.textContent = 'no key';
+    return;
+  }
+  if (kind === 'rules') {
+    el.statModel.textContent = 'offline (rules)';
+    el.statLink.textContent = 'no key';
+    return;
+  }
+  const pid = currentProvider();
+  if (pid !== 'anthropic') {
+    const model = (memory.settings.providerModels || {})[pid] || providerFor(pid)?.models?.[0] || '';
+    el.statModel.textContent = model;
+    el.statLink.textContent = providerFor(pid)?.label?.split(' ')[0].toLowerCase() || pid;
     return;
   }
   const s = memory.settings;
@@ -622,6 +832,135 @@ function applySettings() {
   // Clap detection only makes sense once the mic analyser is live (post-boot).
   if (s.clapToDictate) voice.startClapWatch();
   else voice.stopClapWatch();
+}
+
+// --- connectors -------------------------------------------------------------
+
+/** Is this connector switched on? Unset means on. */
+function connectorOn(id) {
+  return (memory.settings.connectors || {})[id] !== false;
+}
+
+function renderConnectors() {
+  el.connGrid.innerHTML = '';
+  el.connGrid.append(buildGmailCard());
+  for (const [id, connector] of Object.entries(CONNECTORS)) {
+    const on = connectorOn(id);
+
+    const card = document.createElement('div');
+    card.className = `conn__card ${on ? 'is-on' : 'is-off'}`;
+
+    const head = document.createElement('div');
+    head.className = 'conn__head';
+    const name = document.createElement('span');
+    name.className = 'conn__name';
+    name.textContent = connector.name;
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'conn__toggle';
+    toggle.setAttribute('role', 'switch');
+    toggle.setAttribute('aria-checked', String(on));
+    toggle.setAttribute('aria-label', `${connector.name} connector`);
+    toggle.addEventListener('click', () => {
+      const next = { ...(memory.settings.connectors || {}) };
+      next[id] = !connectorOn(id);
+      memory.setSetting('connectors', next);
+      renderConnectors();
+    });
+
+    head.append(name, toggle);
+
+    const blurb = document.createElement('p');
+    blurb.className = 'conn__blurb';
+    blurb.textContent = connector.blurb;
+
+    const eg = document.createElement('p');
+    eg.className = 'conn__eg';
+    eg.textContent = connector.example;
+
+    card.append(head, blurb, eg);
+    el.connGrid.append(card);
+  }
+}
+
+/**
+ * Real Gmail. Needs a Google OAuth client id the user creates themselves — no
+ * shared credentials, and the token never leaves this tab.
+ */
+function buildGmailCard() {
+  const card = document.createElement('div');
+  card.className = `conn__card ${gmail.connected ? 'is-on' : 'is-off'}`;
+
+  const head = document.createElement('div');
+  head.className = 'conn__head';
+  const name = document.createElement('span');
+  name.className = 'conn__name';
+  name.textContent = 'Gmail — real inbox';
+  head.append(name);
+
+  const blurb = document.createElement('p');
+  blurb.className = 'conn__blurb';
+  blurb.textContent = gmail.connected
+    ? 'Connected. JARVIS can read and search your mail, and save drafts. It cannot send.'
+    : 'Read and search your actual inbox, and save real drafts. Needs a free Google OAuth client ID that you create — nothing is shared.';
+
+  const eg = document.createElement('p');
+  eg.className = 'conn__eg';
+  eg.textContent = gmail.connected
+    ? '"Jarvis, anything unread from my boss?"'
+    : 'Paste your client ID below, then sign in.';
+
+  card.append(head, blurb, eg);
+
+  if (!gmail.connected) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'conn__input';
+    input.placeholder = '1234-abc.apps.googleusercontent.com';
+    input.value = memory.settings.googleClientId || '';
+    input.addEventListener('change', () => {
+      memory.setSetting('googleClientId', input.value.trim());
+    });
+
+    const help = document.createElement('a');
+    help.className = 'conn__link';
+    help.href = 'https://console.cloud.google.com/apis/credentials';
+    help.target = '_blank';
+    help.rel = 'noopener';
+    help.textContent = 'Get a client ID →';
+
+    const signIn = document.createElement('button');
+    signIn.type = 'button';
+    signIn.className = 'conn__signin';
+    signIn.textContent = 'Sign in with Google';
+    signIn.addEventListener('click', () => {
+      memory.setSetting('googleClientId', input.value.trim());
+      if (!gmail.connect()) toast('Paste your Google client ID first.');
+    });
+
+    card.append(input, help, signIn);
+  } else {
+    const out = document.createElement('button');
+    out.type = 'button';
+    out.className = 'conn__signin';
+    out.textContent = 'Disconnect';
+    out.addEventListener('click', () => {
+      gmail.disconnect();
+      toast('Gmail disconnected.');
+    });
+    card.append(out);
+  }
+  return card;
+}
+
+function openConnectors() {
+  renderConnectors();
+  el.conn.hidden = false;
+}
+
+function closeConnectors() {
+  el.conn.hidden = true;
 }
 
 // --- install as an app ------------------------------------------------------
@@ -710,9 +1049,15 @@ async function boot() {
   }
 
   const who = memory.settings.name ? `, ${memory.settings.name}` : '';
-  const greeting = isOffline()
-    ? `Running offline${who} — timers, tasks and memory work. Add an API key in settings for the full brain.`
-    : (who ? `Good to see you${who}. Standing by.` : 'Systems online. Standing by.');
+  const kind = brainKind();
+  let greeting;
+  if (kind === 'local') {
+    greeting = `Local brain online${who}. Running entirely on this machine, no key needed.`;
+  } else if (kind === 'rules') {
+    greeting = `Running offline${who} — timers, tasks and memory work. Switch the brain to Local AI in settings for real conversation without a key.`;
+  } else {
+    greeting = who ? `Good to see you${who}. Standing by.` : 'Systems online. Standing by.';
+  }
   bubble('jarvis', greeting);
   voice.say(greeting);
 }
@@ -757,16 +1102,45 @@ async function init() {
   // over http(s) — a file:// page or the standalone single-file build has no SW.
   // BUILD-STRIP-START (removed from the single-file bundle)
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      // Actively adopt a new build instead of waiting for a lucky second
+      // reload — an installed app otherwise sits on a stale copy for days.
+      reg.addEventListener('updatefound', () => {
+        const fresh = reg.installing;
+        if (!fresh) return;
+        fresh.addEventListener('statechange', () => {
+          if (fresh.state === 'installed' && navigator.serviceWorker.controller) {
+            fresh.postMessage('skip-waiting');
+            toast('Updating JARVIS…');
+          }
+        });
+      });
+      reg.update().catch(() => {});
+    }).catch(() => {
       /* first run offline, or SW unsupported — the app still works. */
+    });
+
+    // When the new worker takes over, reload once so the fresh build is live.
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloading) return;
+      reloading = true;
+      window.location.reload();
     });
   }
   // BUILD-STRIP-END
+
+  // Google may have just redirected back with a token in the fragment.
+  const adopted = gmail.adoptRedirect();
+  if (adopted?.error) toast(`Gmail sign-in failed: ${adopted.error}`);
+  else if (adopted?.token) toast('Gmail connected.');
 
   setupInstall();
 
   // Memory brain: open from the panel, close with the button or Escape.
   el.brainBtn.addEventListener('click', openMind);
+  el.connBtn.addEventListener('click', openConnectors);
+  el.connClose.addEventListener('click', closeConnectors);
   el.mindClose.addEventListener('click', closeMind);
   el.mindSearch.addEventListener('input', (ev) => {
     mind.setFilter(ev.target.value);
@@ -788,6 +1162,10 @@ async function init() {
 
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape') {
+      if (!el.conn.hidden) {
+        closeConnectors();
+        return;
+      }
       if (!el.mind.hidden) {
         closeMind();
         return;

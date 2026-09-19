@@ -4,6 +4,8 @@
  * string (or a promise for one) which is sent back as the tool_result.
  */
 import { memory } from './memory.js';
+import { connectorTools, findConnectorTool } from './connectors.js';
+import { buildAppUrl, appTool, describeOpen } from './apps.js';
 
 const timers = new Map();
 
@@ -247,6 +249,39 @@ export function createTools(ctx) {
       return `Opened ${parsed.href}.`;
     },
 
+    open_app({ app, ...params }) {
+      let built;
+      try {
+        built = buildAppUrl(app, params, navigator.userAgent);
+      } catch (err) {
+        return err.message;
+      }
+      // A native scheme fails silently when the app isn't installed, so fall
+      // back to the website shortly after.
+      const opened = window.open(built.url, '_blank', 'noopener');
+      if (built.url !== built.fallback) {
+        setTimeout(() => {
+          if (!document.hidden) window.open(built.fallback, '_blank', 'noopener');
+        }, 1200);
+      }
+      if (!opened && built.url === built.fallback) return 'The browser blocked that pop-up.';
+      ctx.notify?.(`Opened ${built.app.name}`);
+      return describeOpen(app, params);
+    },
+
+    async read_inbox({ query = 'in:inbox', max = 8 }) {
+      if (!ctx.gmail?.connected) return 'Gmail is not connected. Open the Connectors page to sign in.';
+      const messages = await ctx.gmail.search(query, max);
+      return ctx.formatInbox ? ctx.formatInbox(messages) : JSON.stringify(messages);
+    },
+
+    async draft_email({ to = '', subject = '', body }) {
+      if (!ctx.gmail?.connected) return 'Gmail is not connected. Open the Connectors page to sign in.';
+      await ctx.gmail.createDraft({ to, subject, body });
+      ctx.notify?.('Draft saved to Gmail');
+      return `Saved a draft${to ? ` to ${to}` : ''} in your Gmail. It is not sent — open Gmail to review and send.`;
+    },
+
     async system_status() {
       const status = {
         screen: `${window.screen.width}x${window.screen.height}`,
@@ -275,11 +310,69 @@ export function createTools(ctx) {
     },
   };
 
+  /** Tools that only exist once Gmail is actually signed in. */
+  const inboxDefs = [
+    {
+      name: 'read_inbox',
+      description:
+        'Search or read the user\'s real Gmail. Use Gmail search syntax, e.g. "in:inbox is:unread", '
+        + '"from:sam@example.com", "newer_than:2d". Returns senders, subjects and snippets. '
+        + 'Use this whenever the user asks what is in their inbox or about a specific email.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Gmail search query. Defaults to in:inbox.' },
+          max: { type: 'number', description: 'How many messages, up to 20. Default 8.' },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'draft_email',
+      description:
+        'Save a real draft in the user\'s Gmail account. It is never sent — the user opens '
+        + 'Gmail and presses send. Prefer this over compose_email when Gmail is connected.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient address.' },
+          subject: { type: 'string', description: 'Subject line.' },
+          body: { type: 'string', description: 'The message, written out in full.' },
+        },
+        required: ['body'],
+      },
+    },
+  ];
+
+  /** Built-in tools plus whichever connectors are switched on. */
+  function allDefinitions() {
+    const list = [...defs, appTool(), ...connectorTools(memory.settings.connectors || {})];
+    if (ctx.gmail?.connected) list.push(...inboxDefs);
+    return list;
+  }
+
   return {
-    definitions: defs,
+    get definitions() {
+      return allDefinitions();
+    },
 
     /** Run a tool_use block and return its string result. */
     async run(name, input) {
+      // Connector tools build a URL and hand off to the real app.
+      const hit = findConnectorTool(name, memory.settings.connectors || {});
+      if (hit) {
+        try {
+          const url = hit.tool.build(input || {});
+          const parsed = new URL(url);
+          if (parsed.protocol !== 'https:') return 'Refused: connectors only open https links.';
+          window.open(parsed.href, '_blank', 'noopener');
+          ctx.notify?.(`Opened ${hit.connector.name}`);
+          return hit.tool.say?.(input || {}) || `Opened ${hit.connector.name}.`;
+        } catch (err) {
+          return `Could not open ${hit.connector.name}: ${err.message}`;
+        }
+      }
+
       const fn = handlers[name];
       if (!fn) return `Unknown tool "${name}".`;
       try {

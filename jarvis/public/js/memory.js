@@ -20,6 +20,14 @@ const DEFAULTS = {
     webSearch: false,
     name: '',
     clapToDictate: true,     // double-clap starts a capture
+    brain: 'auto',           // auto | api | local (in-browser LLM) | rules
+    provider: 'anthropic',   // which API provider when brain is 'api'
+    providerKeys: {},        // per-provider API keys, this browser only
+    providerModels: {},      // per-provider chosen model
+    connectors: {},          // per-connector on/off; empty means all on
+    googleClientId: '',      // your own Google OAuth client id, for real Gmail access
+    localModel: '',          // override the in-browser model id
+    localSpeed: 'balanced',  // fastest | balanced | smartest
     speechEngine: 'auto',    // auto | web-speech | vosk (on-device)
     voskModelUrl: '',        // override the default on-device model
   },
