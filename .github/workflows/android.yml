@@ -18,10 +18,12 @@
 #     is why `bubblewrap init` runs inside twa/ rather than being pointed at it
 #     with --directory.
 #   * Everything left is a field confirmation defaulted from the web manifest,
-#     so a fixed run of blank lines accepts them. It is deliberately *fixed*:
-#     when the answers run out the CLI sees EOF and exits, whereas an endless
-#     stream (`yes ''`) spins forever against any field that rejects a blank.
-#     The step timeouts are the backstop for that.
+#     so blank lines accept them — but how they are fed matters. `yes ''` spins
+#     forever against any field that rejects a blank, while writing a fixed
+#     batch up front closes the pipe, and the CLI reads that EOF as a hangup
+#     after the first answer or two. So they are dripped in one at a time: the
+#     stream stays open between prompts, and it still runs dry eventually
+#     rather than looping. The step timeouts are the backstop.
 name: Build Android APK
 
 on:
@@ -98,7 +100,7 @@ jobs:
         working-directory: twa
         timeout-minutes: 8
         run: |
-          printf '\n%.0s' $(seq 80) | bubblewrap init \
+          for _ in $(seq 120); do printf '\n'; sleep 0.25; done | bubblewrap init \
             --manifest "https://${{ inputs.host }}${{ inputs.path }}manifest.webmanifest" \
             --chromeosonly false \
             --alphaDependencies false \
