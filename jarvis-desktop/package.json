@@ -1,0 +1,32 @@
+{
+  "name": "jarvis-desktop",
+  "productName": "JARVIS",
+  "version": "1.0.0",
+  "description": "JARVIS as a Windows application.",
+  "type": "module",
+  "main": "src/main.js",
+  "scripts": {
+    "prepare-renderer": "node scripts/prepare-renderer.mjs",
+    "start": "npm run prepare-renderer && electron .",
+    "dist": "npm run prepare-renderer && electron-builder --win --publish never",
+    "test": "node --test test/permissions.test.mjs test/apps.test.mjs"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.jarvis.desktop",
+    "productName": "JARVIS",
+    "files": ["src/**/*", "renderer/**/*", "build/icon.png"],
+    "directories": { "output": "dist", "buildResources": "build" },
+    "win": { "target": ["nsis", "portable"], "icon": "build/icon.png" },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "license": "MIT"
+}

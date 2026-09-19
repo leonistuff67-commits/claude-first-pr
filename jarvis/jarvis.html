@@ -1076,6 +1076,7 @@ body[data-state="thinking"] .composer {
     </label>
 
     <div class="settings__actions">
+      <button type="button" id="export-btn">Export brain</button>
       <button type="button" class="danger" id="wipe-btn">Erase memory</button>
       <button value="close" class="primary">Done</button>
     </div>
@@ -1273,6 +1274,109 @@ const memory = {
   },
 };
 // --- end memory.js ---
+
+// --- history.js ---
+/**
+ * Conversation-history repair.
+ *
+ * The Messages API has one hard rule about tools: every `tool_use` block in an
+ * assistant message must be answered by a `tool_result` block carrying the same
+ * id in the very next message. Break it and the API rejects the whole request
+ * with "tool_use ids were found without tool_result blocks immediately after".
+ *
+ * A transcript can end up violating that rule without anyone doing anything
+ * wrong — the model can stop mid-tool-call when it hits the token ceiling, a
+ * turn can be cut short, or an old build can have stored a half-finished round.
+ * Because the transcript is persisted, one bad round poisons every later
+ * request: the assistant never gets another word in until it is cleaned up.
+ *
+ * So the transcript is repaired on the way in and on the way out, rather than
+ * trusted. These functions are pure so they can be tested without a browser.
+ */
+
+/** Blocks the API accepts; anything else we added for our own use is dropped. */
+const BLOCK_FIELDS = {
+  text: ['type', 'text'],
+  tool_use: ['type', 'id', 'name', 'input'],
+  tool_result: ['type', 'tool_use_id', 'content', 'is_error'],
+  image: ['type', 'source'],
+  thinking: ['type', 'thinking', 'signature'],
+};
+
+/** Strip bookkeeping fields (e.g. a parse-error note) the API would reject. */
+function cleanBlock(block) {
+  const allowed = BLOCK_FIELDS[block?.type];
+  if (!allowed) return block;
+  const out = {};
+  for (const key of allowed) if (key in block) out[key] = block[key];
+  return out;
+}
+
+const blocksOf = (message) => (Array.isArray(message?.content) ? message.content : []);
+const idsAnsweredBy = (message) =>
+  new Set(blocksOf(message).filter((b) => b?.type === 'tool_result').map((b) => b.tool_use_id));
+
+/**
+ * Return a transcript the API will accept: every `tool_use` is answered by the
+ * message right after it, and every `tool_result` answers the message right
+ * before it. Unpaired blocks are dropped rather than invented — a tool call
+ * that was never run has no result worth making up, and its arguments may have
+ * been truncated mid-JSON.
+ */
+function repair(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+
+  // Pass 1: drop tool_use blocks the next message does not answer.
+  const kept = [];
+  const answeredIds = new Set();
+  for (let i = 0; i < list.length; i++) {
+    const message = list[i];
+    if (message?.role !== 'assistant' || !Array.isArray(message.content)) {
+      kept.push(message);
+      continue;
+    }
+    const answers = idsAnsweredBy(list[i + 1]);
+    const content = message.content.filter((b) => b?.type !== 'tool_use' || answers.has(b.id));
+    for (const b of content) if (b?.type === 'tool_use') answeredIds.add(b.id);
+    kept.push({ ...message, content });
+  }
+
+  // Pass 2: drop tool_result blocks whose call did not survive, then drop any
+  // message left with nothing to say.
+  const out = [];
+  for (const message of kept) {
+    if (!Array.isArray(message?.content)) {
+      if (message?.content) out.push(message);
+      continue;
+    }
+    const prev = out[out.length - 1];
+    const calls = new Set(
+      blocksOf(prev).filter((b) => b?.type === 'tool_use' && answeredIds.has(b.id)).map((b) => b.id),
+    );
+    const content = message.content
+      .filter((b) => b?.type !== 'tool_result' || calls.has(b.tool_use_id))
+      .map(cleanBlock);
+    if (content.length) out.push({ ...message, content });
+  }
+  return out;
+}
+
+/**
+ * Trim the transcript to the most recent `limit` messages, repair it, and drop
+ * leading messages until it opens on a plain user turn — a window cut anywhere
+ * else would start with an answer to a question the model can no longer see.
+ */
+function sanitize(messages, limit = 40) {
+  let out = repair((Array.isArray(messages) ? messages : []).slice(-limit));
+  while (out.length) {
+    const first = out[0];
+    const orphanResult = blocksOf(first).some((b) => b?.type === 'tool_result');
+    if (first.role === 'user' && !orphanResult) break;
+    out = out.slice(1);
+  }
+  return out;
+}
+// --- end history.js ---
 
 // --- connectors.js ---
 /**
@@ -2015,6 +2119,9 @@ function createTools(ctx) {
   function allDefinitions() {
     const list = [...defs, appTool(), ...connectorTools(memory.settings.connectors || {})];
     if (ctx.gmail?.connected) list.push(...inboxDefs);
+    // Only offered when running as the desktop app; in a tab there is nothing
+    // on the other side of the bridge to call.
+    if (desktopAvailable()) list.push(...desktopTools());
     return list;
   }
 
@@ -2040,7 +2147,7 @@ function createTools(ctx) {
         }
       }
 
-      const fn = handlers[name];
+      const fn = handlers[name] || (desktopAvailable() ? desktopHandlers()[name] : null);
       if (!fn) return `Unknown tool "${name}".`;
       try {
         return String(await fn(input || {}));
@@ -2281,7 +2388,10 @@ class Brain {
                 block.input = raw ? JSON.parse(raw) : {};
               } catch {
                 block.input = {};
-                block._parseError = raw;
+                // Truncated mid-JSON. Keep the block usable rather than
+                // hanging a field on it that the API would reject when this
+                // turn is replayed as history.
+                console.warn('tool input did not parse:', raw);
               }
               partialJson.delete(event.index);
               if (block.type === 'tool_use') on.toolUse?.(block);
@@ -4854,7 +4964,7 @@ const el = {
   statStatus: $('stat-status'), statModel: $('stat-model'), statLink: $('stat-link'), statVoice: $('stat-voice'),
   timers: $('timers'), tasks: $('tasks'), facts: $('facts'),
   taskCount: $('task-count'), factCount: $('fact-count'),
-  toast: $('toast'), wipeBtn: $('wipe-btn'),
+  toast: $('toast'), wipeBtn: $('wipe-btn'), exportBtn: $('export-btn'),
   mind: $('mind'), mindCanvas: $('mind-canvas'), mindSearch: $('mind-search'),
   mindClose: $('mind-close'), mindDetail: $('mind-detail'), mindStats: $('mind-stats'),
   brainBtn: $('brain-btn'),
@@ -5255,22 +5365,6 @@ function buildSystemPrompt() {
   return lines.join('\n');
 }
 
-/**
- * Drop leading messages until the history starts on a clean user turn, so a
- * trimmed transcript never opens with an orphaned tool_result.
- */
-function sanitize(messages) {
-  let out = messages.slice(-40);
-  while (out.length) {
-    const first = out[0];
-    const orphanResult =
-      Array.isArray(first.content) && first.content.some((b) => b.type === 'tool_result');
-    if (first.role === 'user' && !orphanResult) break;
-    out = out.slice(1);
-  }
-  return out;
-}
-
 // --- the turn loop ----------------------------------------------------------
 
 /** Flip the busy flag and mirror it onto the DOM (handy for tests/automation). */
@@ -5313,13 +5407,20 @@ async function send(text) {
 
       messages.push({ role: 'assistant', content: result.content });
 
-      if (result.stopReason !== 'tool_use') {
+      // What decides the next round is whether the model actually asked for a
+      // tool, not what it said its stop reason was. A reply cut short by the
+      // token ceiling still carries the tool_use blocks it managed to emit, and
+      // leaving one unanswered would wedge every later request.
+      const calls = result.content.filter((b) => b.type === 'tool_use');
+      if (!calls.length) {
         voice.flush();
+        if (result.stopReason === 'max_tokens') {
+          bubble('error', 'That reply hit the length limit, so it may be cut off.');
+        }
         break;
       }
 
       // Run every tool_use block in this turn, then hand all results back at once.
-      const calls = result.content.filter((b) => b.type === 'tool_use');
       const results = [];
       for (const call of calls) {
         bubble('tool', `· ${call.name}`);
@@ -5600,6 +5701,22 @@ function wireSettings() {
     loadVoiceOptions();
     syncSettingsControls();
     el.settings.showModal();
+  });
+
+  // Hand the brain over to whatever else is running JARVIS — the desktop MCP
+  // server takes this file as-is. Facts and tasks only: the settings hold API
+  // keys and the history is this browser's business.
+  el.exportBtn.addEventListener('click', () => {
+    const brain = { facts: memory.facts, tasks: memory.tasks, exportedAt: new Date().toISOString() };
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(brain, null, 2)], { type: 'application/json' }),
+    );
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'jarvis-brain.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast(`Exported ${brain.facts.length} facts and ${brain.tasks.length} tasks.`);
   });
 
   el.wipeBtn.addEventListener('click', () => {
@@ -5885,6 +6002,13 @@ async function boot() {
 }
 
 async function init() {
+  // A transcript saved by an older build (or by a turn that was cut short) can
+  // hold a tool call with no result, which every later request would be
+  // rejected for. Heal it once, here, rather than stranding the user with an
+  // assistant that can only answer with the same API error forever.
+  const healed = repair(memory.history);
+  if (JSON.stringify(healed) !== JSON.stringify(memory.history)) memory.replaceHistory(healed);
+
   // Does the server hold an API key, or must the browser supply one? Opened
   // straight off disk there is no server to ask, and fetch on a file:// URL
   // logs an error even when it is caught — so don't ask.

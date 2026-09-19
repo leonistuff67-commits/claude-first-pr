@@ -222,7 +222,10 @@ export class Brain {
                 block.input = raw ? JSON.parse(raw) : {};
               } catch {
                 block.input = {};
-                block._parseError = raw;
+                // Truncated mid-JSON. Keep the block usable rather than
+                // hanging a field on it that the API would reject when this
+                // turn is replayed as history.
+                console.warn('tool input did not parse:', raw);
               }
               partialJson.delete(event.index);
               if (block.type === 'tool_use') on.toolUse?.(block);

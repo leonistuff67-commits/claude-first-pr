@@ -6,6 +6,24 @@
 #
 # Run it from the Actions tab (Run workflow). The APK lands as a build artifact
 # you can download and install.
+#
+# Bubblewrap's CLI is interactive, which takes some care on a runner where
+# nobody can answer it:
+#
+#   * It offers to download a JDK and an Android SDK. Both are installed up
+#     front and handed to it in ~/.bubblewrap/config.json, so it never asks.
+#   * If it cannot find a signing key it walks you through creating one, and
+#     those fields reject an empty answer. The key is therefore created first,
+#     at exactly the path its prompt defaults to — the working directory, which
+#     is why `bubblewrap init` runs inside twa/ rather than being pointed at it
+#     with --directory.
+#   * Everything left is a field confirmation defaulted from the web manifest,
+#     so blank lines accept them — but how they are fed matters. `yes ''` spins
+#     forever against any field that rejects a blank, while writing a fixed
+#     batch up front closes the pipe, and the CLI reads that EOF as a hangup
+#     after the first answer or two. So they are dripped in one at a time: the
+#     stream stays open between prompts, and it still runs dry eventually
+#     rather than looping. The step timeouts are the backstop.
 name: Build Android APK
 
 on:
@@ -24,6 +42,7 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -36,44 +55,121 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Install the Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      # Bubblewrap 1.25 pins build-tools 36.1.0 and generates a project that
+      # compiles against SDK 36, so those are what it needs present.
+      - name: Install build tools and platforms
+        run: |
+          sdkmanager --install \
+            'platforms;android-36' 'platforms;android-35' \
+            'build-tools;36.1.0' 'build-tools;35.0.0'
+          yes | sdkmanager --licenses > /dev/null || true
+
+      # Bubblewrap checks for <sdk>/tools or <sdk>/bin and rejects the SDK
+      # outright if it finds neither ("The provided androidSdk isn't correct").
+      # The runner's SDK keeps those binaries under cmdline-tools/<version>/bin,
+      # which is also where Bubblewrap looks for sdkmanager if it decides to
+      # install something itself.
+      #
+      # A symlinked directory is no good here: sdkmanager's launcher finds its
+      # own jars relative to where it was invoked from, so reaching it through
+      # <sdk>/bin leaves it hunting for classes in the wrong place. A one-line
+      # wrapper pointing at the real script satisfies the check and still runs.
+      - name: Give the SDK the layout Bubblewrap expects
+        run: |
+          real="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f | head -1)"
+          test -n "$real" || { echo 'no sdkmanager under cmdline-tools'; exit 1; }
+          mkdir -p "$ANDROID_SDK_ROOT/bin"
+          printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$real" > "$ANDROID_SDK_ROOT/bin/sdkmanager"
+          chmod +x "$ANDROID_SDK_ROOT/bin/sdkmanager"
+          "$ANDROID_SDK_ROOT/bin/sdkmanager" --version
+
       - name: Install Bubblewrap
         run: npm install -g @bubblewrap/cli
 
+      # This is what keeps the build non-interactive: with both paths known,
+      # Bubblewrap skips its "shall I download a JDK / SDK?" questions.
+      - name: Point Bubblewrap at the installed JDK and SDK
+        run: |
+          mkdir -p "$HOME/.bubblewrap"
+          printf '{"jdkPath":"%s","androidSdkPath":"%s"}\n' \
+            "$JAVA_HOME" "$ANDROID_SDK_ROOT" > "$HOME/.bubblewrap/config.json"
+          cat "$HOME/.bubblewrap/config.json"
+
       # A debug keystore keeps this reproducible without committing secrets.
       # For a Play Store release you would sign with your own upload key.
+      # It goes in twa/ under the default name and alias, which is where
+      # `bubblewrap init` looks: found, it never offers to generate one, and the
+      # required fields that come with that offer never get asked.
       - name: Create a signing key
         run: |
+          mkdir -p twa
           keytool -genkeypair -v \
-            -keystore android.keystore -alias jarvis \
+            -keystore twa/android.keystore -alias android \
             -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass jarvis123 -keypass jarvis123 \
             -dname "CN=JARVIS, OU=Dev, O=JARVIS, L=., S=., C=US"
 
       - name: Initialise the TWA project
+        working-directory: twa
+        timeout-minutes: 8
         run: |
-          bubblewrap init \
+          for _ in $(seq 120); do printf '\n'; sleep 0.25; done | bubblewrap init \
             --manifest "https://${{ inputs.host }}${{ inputs.path }}manifest.webmanifest" \
-            --directory twa \
             --chromeosonly false \
             --alphaDependencies false \
-            --skipPwaValidation true <<< $'\n\n\n\n\n\n\n\n\n\n\n\n\n\n'
+            --skipPwaValidation true
+          echo '--- twa-manifest.json ---'
+          cat twa-manifest.json
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: jarvis123
           BUBBLEWRAP_KEY_PASSWORD: jarvis123
 
-      - name: Build the APK
-        working-directory: twa
-        run: bubblewrap build --skipPwaValidation
-        env:
-          BUBBLEWRAP_KEYSTORE_PASSWORD: jarvis123
-          BUBBLEWRAP_KEY_PASSWORD: jarvis123
-
-      - name: Report the signing fingerprint
+      # Whatever the prompts settled on, sign with the key made above.
+      - name: Point the project at the signing key
         working-directory: twa
         run: |
+          node -e '
+            const fs = require("fs");
+            const m = JSON.parse(fs.readFileSync("twa-manifest.json", "utf8"));
+            m.signingKey = { path: process.cwd() + "/android.keystore", alias: "android" };
+            fs.writeFileSync("twa-manifest.json", JSON.stringify(m, null, 2));
+          '
+
+      # </dev/null so an unexpected question fails the step straight away
+      # rather than waiting on an answer that is never coming.
+      - name: Build the APK
+        working-directory: twa
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          bubblewrap build --skipPwaValidation < /dev/null 2>&1 | tee build.log
+        env:
+          BUBBLEWRAP_KEYSTORE_PASSWORD: jarvis123
+          BUBBLEWRAP_KEY_PASSWORD: jarvis123
+
+      # Gradle buries the one useful line under a hundred frames of its own
+      # stack, which is unreadable in the Actions log. Pull it back out.
+      - name: Explain a build failure
+        if: failure()
+        working-directory: twa
+        run: |
+          echo '=== what went wrong ==='
+          grep -A 20 'What went wrong' build.log || true
+          echo '=== errors ==='
+          grep -E '^(e: |error:|FAILURE|\* Try|> )' build.log | head -40 || true
+
+      - name: Report the signing fingerprint
+        if: always()
+        run: |
           echo "Add this SHA-256 to assetlinks.json so the app opens without a URL bar:"
-          keytool -list -v -keystore ../android.keystore -alias jarvis \
+          keytool -list -v -keystore twa/android.keystore -alias android \
             -storepass jarvis123 | grep 'SHA256:' || true
+
 
       - uses: actions/upload-artifact@v4
         with:
