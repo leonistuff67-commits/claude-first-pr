@@ -248,6 +248,19 @@ export function createTools(ctx) {
       return `Opened ${parsed.href}.`;
     },
 
+    async read_inbox({ query = 'in:inbox', max = 8 }) {
+      if (!ctx.gmail?.connected) return 'Gmail is not connected. Open the Connectors page to sign in.';
+      const messages = await ctx.gmail.search(query, max);
+      return ctx.formatInbox ? ctx.formatInbox(messages) : JSON.stringify(messages);
+    },
+
+    async draft_email({ to = '', subject = '', body }) {
+      if (!ctx.gmail?.connected) return 'Gmail is not connected. Open the Connectors page to sign in.';
+      await ctx.gmail.createDraft({ to, subject, body });
+      ctx.notify?.('Draft saved to Gmail');
+      return `Saved a draft${to ? ` to ${to}` : ''} in your Gmail. It is not sent — open Gmail to review and send.`;
+    },
+
     async system_status() {
       const status = {
         screen: `${window.screen.width}x${window.screen.height}`,
@@ -276,9 +289,45 @@ export function createTools(ctx) {
     },
   };
 
+  /** Tools that only exist once Gmail is actually signed in. */
+  const inboxDefs = [
+    {
+      name: 'read_inbox',
+      description:
+        'Search or read the user\'s real Gmail. Use Gmail search syntax, e.g. "in:inbox is:unread", '
+        + '"from:sam@example.com", "newer_than:2d". Returns senders, subjects and snippets. '
+        + 'Use this whenever the user asks what is in their inbox or about a specific email.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Gmail search query. Defaults to in:inbox.' },
+          max: { type: 'number', description: 'How many messages, up to 20. Default 8.' },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'draft_email',
+      description:
+        'Save a real draft in the user\'s Gmail account. It is never sent — the user opens '
+        + 'Gmail and presses send. Prefer this over compose_email when Gmail is connected.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient address.' },
+          subject: { type: 'string', description: 'Subject line.' },
+          body: { type: 'string', description: 'The message, written out in full.' },
+        },
+        required: ['body'],
+      },
+    },
+  ];
+
   /** Built-in tools plus whichever connectors are switched on. */
   function allDefinitions() {
-    return [...defs, ...connectorTools(memory.settings.connectors || {})];
+    const list = [...defs, ...connectorTools(memory.settings.connectors || {})];
+    if (ctx.gmail?.connected) list.push(...inboxDefs);
+    return list;
   }
 
   return {

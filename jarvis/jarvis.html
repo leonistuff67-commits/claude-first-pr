@@ -810,6 +810,40 @@ body[data-state="thinking"] .composer {
   background: var(--accent);
 }
 
+/* --- gmail sign-in card --------------------------------------------------- */
+
+.conn__input {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font: 400 12px/1 var(--font);
+  outline: none;
+}
+.conn__input:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+
+.conn__link {
+  font: 400 11.5px/1 var(--ui);
+  color: var(--muted);
+  text-decoration: none;
+}
+.conn__link:hover { color: var(--accent); }
+
+.conn__signin {
+  margin-top: 4px;
+  padding: 9px 14px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font: 600 11.5px/1 var(--ui);
+  cursor: pointer;
+}
+.conn__signin:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); color: #fff; }
+
 </style>
 </head>
 <body>
@@ -1082,6 +1116,7 @@ const DEFAULTS = {
     providerKeys: {},        // per-provider API keys, this browser only
     providerModels: {},      // per-provider chosen model
     connectors: {},          // per-connector on/off; empty means all on
+    googleClientId: '',      // your own Google OAuth client id, for real Gmail access
     localModel: '',          // override the in-browser model id
     localSpeed: 'balanced',  // fastest | balanced | smartest
     speechEngine: 'auto',    // auto | web-speech | vosk (on-device)
@@ -1707,6 +1742,19 @@ function createTools(ctx) {
       return `Opened ${parsed.href}.`;
     },
 
+    async read_inbox({ query = 'in:inbox', max = 8 }) {
+      if (!ctx.gmail?.connected) return 'Gmail is not connected. Open the Connectors page to sign in.';
+      const messages = await ctx.gmail.search(query, max);
+      return ctx.formatInbox ? ctx.formatInbox(messages) : JSON.stringify(messages);
+    },
+
+    async draft_email({ to = '', subject = '', body }) {
+      if (!ctx.gmail?.connected) return 'Gmail is not connected. Open the Connectors page to sign in.';
+      await ctx.gmail.createDraft({ to, subject, body });
+      ctx.notify?.('Draft saved to Gmail');
+      return `Saved a draft${to ? ` to ${to}` : ''} in your Gmail. It is not sent — open Gmail to review and send.`;
+    },
+
     async system_status() {
       const status = {
         screen: `${window.screen.width}x${window.screen.height}`,
@@ -1735,9 +1783,45 @@ function createTools(ctx) {
     },
   };
 
+  /** Tools that only exist once Gmail is actually signed in. */
+  const inboxDefs = [
+    {
+      name: 'read_inbox',
+      description:
+        'Search or read the user\'s real Gmail. Use Gmail search syntax, e.g. "in:inbox is:unread", '
+        + '"from:sam@example.com", "newer_than:2d". Returns senders, subjects and snippets. '
+        + 'Use this whenever the user asks what is in their inbox or about a specific email.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Gmail search query. Defaults to in:inbox.' },
+          max: { type: 'number', description: 'How many messages, up to 20. Default 8.' },
+        },
+        required: [],
+      },
+    },
+    {
+      name: 'draft_email',
+      description:
+        'Save a real draft in the user\'s Gmail account. It is never sent — the user opens '
+        + 'Gmail and presses send. Prefer this over compose_email when Gmail is connected.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          to: { type: 'string', description: 'Recipient address.' },
+          subject: { type: 'string', description: 'Subject line.' },
+          body: { type: 'string', description: 'The message, written out in full.' },
+        },
+        required: ['body'],
+      },
+    },
+  ];
+
   /** Built-in tools plus whichever connectors are switched on. */
   function allDefinitions() {
-    return [...defs, ...connectorTools(memory.settings.connectors || {})];
+    const list = [...defs, ...connectorTools(memory.settings.connectors || {})];
+    if (ctx.gmail?.connected) list.push(...inboxDefs);
+    return list;
   }
 
   return {
@@ -4034,6 +4118,230 @@ class ProviderBrain {
 }
 // --- end providers.js ---
 
+// --- gmail.js ---
+/**
+ * Real Gmail access, using your own Google OAuth client.
+ *
+ * This is the genuine article: with a client ID you create (free, in Google
+ * Cloud), JARVIS can read, search and summarise your actual inbox. It uses the
+ * browser OAuth implicit flow, so the token lives in this tab and never touches
+ * a server — there is no backend to leak it.
+ *
+ * Scopes are deliberately narrow:
+ *   gmail.readonly  — read and search mail
+ *   gmail.compose   — create drafts (never send)
+ * Sending is NOT requested. JARVIS can draft; you press send.
+ *
+ * Token handling and message parsing are pure functions where possible so they
+ * can be tested without a Google account.
+ */
+const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth';
+const API = 'https://gmail.googleapis.com/gmail/v1/users/me';
+
+const GMAIL_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.compose',
+].join(' ');
+
+/** Build the consent URL for the implicit flow. */
+function buildAuthUrl({ clientId, redirectUri, state }) {
+  if (!clientId) throw new Error('No Google client ID.');
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'token',
+    scope: GMAIL_SCOPES,
+    include_granted_scopes: 'true',
+    prompt: 'consent',
+    state,
+  });
+  return `${AUTH_ENDPOINT}?${params}`;
+}
+
+/**
+ * Pull the token out of the URL fragment Google redirects back with, checking
+ * the state matches so another page can't hand us a token.
+ */
+function parseAuthRedirect(hash, expectedState) {
+  const frag = new URLSearchParams(String(hash || '').replace(/^#/, ''));
+  if (frag.get('error')) return { error: frag.get('error') };
+  const token = frag.get('access_token');
+  if (!token) return null;
+  if (expectedState && frag.get('state') !== expectedState) {
+    return { error: 'state mismatch — ignoring this token' };
+  }
+  const expiresIn = Number(frag.get('expires_in') || 3600);
+  return { token, expiresAt: Date.now() + expiresIn * 1000 };
+}
+
+function tokenValid(session) {
+  return Boolean(session?.token && session.expiresAt && session.expiresAt > Date.now() + 30_000);
+}
+
+/** Decode Gmail's URL-safe base64 body. */
+function decodeBody(data) {
+  if (!data) return '';
+  try {
+    const normalised = String(data).replace(/-/g, '+').replace(/_/g, '/');
+    const binary = atob(normalised);
+    // Bodies are UTF-8; go through bytes so accents survive.
+    const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return '';
+  }
+}
+
+/** Flatten a Gmail message into something worth putting in a prompt. */
+function summariseMessage(message) {
+  const headers = message?.payload?.headers || [];
+  const header = (name) =>
+    headers.find((h) => h.name?.toLowerCase() === name)?.value || '';
+
+  // Prefer the plain-text part; fall back to the top-level body.
+  const parts = [];
+  const walk = (part) => {
+    if (!part) return;
+    if (part.parts) part.parts.forEach(walk);
+    else if (part.mimeType === 'text/plain' && part.body?.data) parts.push(decodeBody(part.body.data));
+  };
+  walk(message?.payload);
+  const body = parts.join('\n') || decodeBody(message?.payload?.body?.data) || message?.snippet || '';
+
+  return {
+    id: message?.id,
+    from: header('from'),
+    to: header('to'),
+    subject: header('subject'),
+    date: header('date'),
+    unread: (message?.labelIds || []).includes('UNREAD'),
+    snippet: message?.snippet || '',
+    body: body.slice(0, 2000),
+  };
+}
+
+/** A compact digest for the model — full bodies would blow the context. */
+function formatInbox(messages) {
+  if (!messages.length) return 'No matching mail.';
+  return messages
+    .map((m, i) => `${i + 1}. ${m.unread ? '[unread] ' : ''}From: ${m.from}\n   Subject: ${m.subject}\n   ${m.snippet}`)
+    .join('\n');
+}
+
+/** RFC 2822 message, base64url encoded, which is what Gmail drafts expect. */
+function encodeDraft({ to = '', subject = '', body = '' }) {
+  const lines = [
+    to && `To: ${to}`,
+    `Subject: ${subject}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    '',
+    body,
+  ].filter((l) => l !== false && l !== undefined && l !== null);
+  const raw = lines.join('\r\n');
+  const bytes = new TextEncoder().encode(raw);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+class Gmail {
+  /** @param {{getSettings: () => object, onSession: (s) => void}} opts */
+  constructor({ getSettings, onSession }) {
+    this.getSettings = getSettings;
+    this.onSession = onSession || (() => {});
+    this.session = null;
+  }
+
+  get connected() {
+    return tokenValid(this.session);
+  }
+
+  /** Where Google should send the user back to. */
+  redirectUri() {
+    return `${window.location.origin}${window.location.pathname}`;
+  }
+
+  /** Kick off consent. Returns false if there's no client ID configured yet. */
+  connect() {
+    const clientId = this.getSettings().googleClientId;
+    if (!clientId) return false;
+    const state = Math.random().toString(36).slice(2);
+    sessionStorage.setItem('jarvis.gmail.state', state);
+    window.location.assign(buildAuthUrl({
+      clientId,
+      redirectUri: this.redirectUri(),
+      state,
+    }));
+    return true;
+  }
+
+  /** Call once on load: picks up a token Google just handed back. */
+  adoptRedirect() {
+    if (!window.location.hash.includes('access_token')) return null;
+    const expected = sessionStorage.getItem('jarvis.gmail.state');
+    const result = parseAuthRedirect(window.location.hash, expected);
+    // Clear the fragment either way so the token isn't left in the URL bar.
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    sessionStorage.removeItem('jarvis.gmail.state');
+    if (!result || result.error) return result;
+    this.session = result;
+    this.onSession(result);
+    return result;
+  }
+
+  disconnect() {
+    this.session = null;
+    this.onSession(null);
+  }
+
+  async #call(pathAndQuery, init = {}) {
+    if (!this.connected) throw new Error('Gmail is not connected. Open the Connectors page to sign in.');
+    const res = await fetch(`${API}${pathAndQuery}`, {
+      ...init,
+      headers: {
+        authorization: `Bearer ${this.session.token}`,
+        'content-type': 'application/json',
+        ...(init.headers || {}),
+      },
+    });
+    if (res.status === 401) {
+      this.disconnect();
+      throw new Error('Gmail session expired — sign in again from the Connectors page.');
+    }
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`Gmail error ${res.status}: ${detail.slice(0, 160)}`);
+    }
+    return res.json();
+  }
+
+  /** Search the mailbox. `query` uses Gmail's own search syntax. */
+  async search(query = 'in:inbox', max = 8) {
+    const list = await this.#call(
+      `/messages?q=${encodeURIComponent(query)}&maxResults=${Math.min(20, Math.max(1, max))}`,
+    );
+    const ids = (list.messages || []).map((m) => m.id);
+    const full = await Promise.all(
+      ids.map((id) => this.#call(`/messages/${id}?format=full`).catch(() => null)),
+    );
+    return full.filter(Boolean).map(summariseMessage);
+  }
+
+  async createDraft({ to, subject, body }) {
+    const draft = await this.#call('/drafts', {
+      method: 'POST',
+      body: JSON.stringify({ message: { raw: encodeDraft({ to, subject, body }) } }),
+    });
+    return draft?.id || '';
+  }
+
+  async profile() {
+    const me = await this.#call('/profile');
+    return me?.emailAddress || '';
+  }
+}
+// --- end gmail.js ---
+
 // --- localbrain.js ---
 /**
  * The local brain — a real language model running in this browser on WebGPU,
@@ -4612,7 +4920,17 @@ const voice = new Voice({
   },
 });
 
+const gmail = new Gmail({
+  getSettings: () => memory.settings,
+  onSession() {
+    renderConnectors();
+    applyModelReadout();
+  },
+});
+
 const tools = createTools({
+  gmail,
+  formatInbox,
   say: (text) => voice.say(text),
   notify: (text) => toast(text),
   setAccent,
@@ -5134,6 +5452,7 @@ function connectorOn(id) {
 
 function renderConnectors() {
   el.connGrid.innerHTML = '';
+  el.connGrid.append(buildGmailCard());
   for (const [id, connector] of Object.entries(CONNECTORS)) {
     const on = connectorOn(id);
 
@@ -5172,6 +5491,76 @@ function renderConnectors() {
     card.append(head, blurb, eg);
     el.connGrid.append(card);
   }
+}
+
+/**
+ * Real Gmail. Needs a Google OAuth client id the user creates themselves — no
+ * shared credentials, and the token never leaves this tab.
+ */
+function buildGmailCard() {
+  const card = document.createElement('div');
+  card.className = `conn__card ${gmail.connected ? 'is-on' : 'is-off'}`;
+
+  const head = document.createElement('div');
+  head.className = 'conn__head';
+  const name = document.createElement('span');
+  name.className = 'conn__name';
+  name.textContent = 'Gmail — real inbox';
+  head.append(name);
+
+  const blurb = document.createElement('p');
+  blurb.className = 'conn__blurb';
+  blurb.textContent = gmail.connected
+    ? 'Connected. JARVIS can read and search your mail, and save drafts. It cannot send.'
+    : 'Read and search your actual inbox, and save real drafts. Needs a free Google OAuth client ID that you create — nothing is shared.';
+
+  const eg = document.createElement('p');
+  eg.className = 'conn__eg';
+  eg.textContent = gmail.connected
+    ? '"Jarvis, anything unread from my boss?"'
+    : 'Paste your client ID below, then sign in.';
+
+  card.append(head, blurb, eg);
+
+  if (!gmail.connected) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'conn__input';
+    input.placeholder = '1234-abc.apps.googleusercontent.com';
+    input.value = memory.settings.googleClientId || '';
+    input.addEventListener('change', () => {
+      memory.setSetting('googleClientId', input.value.trim());
+    });
+
+    const help = document.createElement('a');
+    help.className = 'conn__link';
+    help.href = 'https://console.cloud.google.com/apis/credentials';
+    help.target = '_blank';
+    help.rel = 'noopener';
+    help.textContent = 'Get a client ID →';
+
+    const signIn = document.createElement('button');
+    signIn.type = 'button';
+    signIn.className = 'conn__signin';
+    signIn.textContent = 'Sign in with Google';
+    signIn.addEventListener('click', () => {
+      memory.setSetting('googleClientId', input.value.trim());
+      if (!gmail.connect()) toast('Paste your Google client ID first.');
+    });
+
+    card.append(input, help, signIn);
+  } else {
+    const out = document.createElement('button');
+    out.type = 'button';
+    out.className = 'conn__signin';
+    out.textContent = 'Disconnect';
+    out.addEventListener('click', () => {
+      gmail.disconnect();
+      toast('Gmail disconnected.');
+    });
+    card.append(out);
+  }
+  return card;
 }
 
 function openConnectors() {
@@ -5320,6 +5709,11 @@ async function init() {
 
   // PWA: register the service worker so JARVIS installs and runs offline. Only
   // over http(s) — a file:// page or the standalone single-file build has no SW.
+
+  // Google may have just redirected back with a token in the fragment.
+  const adopted = gmail.adoptRedirect();
+  if (adopted?.error) toast(`Gmail sign-in failed: ${adopted.error}`);
+  else if (adopted?.token) toast('Gmail connected.');
 
   setupInstall();
 

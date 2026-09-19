@@ -14,6 +14,7 @@ import { MindView } from './mind.js';
 import { LocalBrain, webGpuSupported, SPEED_TIERS } from './localbrain.js';
 import { CONNECTORS } from './connectors.js';
 import { PROVIDERS, providerFor, ProviderBrain } from './providers.js';
+import { Gmail, formatInbox } from './gmail.js';
 import { createTools, fmtDuration } from './tools.js';
 
 const $ = (id) => document.getElementById(id);
@@ -310,7 +311,17 @@ const voice = new Voice({
   },
 });
 
+const gmail = new Gmail({
+  getSettings: () => memory.settings,
+  onSession() {
+    renderConnectors();
+    applyModelReadout();
+  },
+});
+
 const tools = createTools({
+  gmail,
+  formatInbox,
   say: (text) => voice.say(text),
   notify: (text) => toast(text),
   setAccent,
@@ -832,6 +843,7 @@ function connectorOn(id) {
 
 function renderConnectors() {
   el.connGrid.innerHTML = '';
+  el.connGrid.append(buildGmailCard());
   for (const [id, connector] of Object.entries(CONNECTORS)) {
     const on = connectorOn(id);
 
@@ -870,6 +882,76 @@ function renderConnectors() {
     card.append(head, blurb, eg);
     el.connGrid.append(card);
   }
+}
+
+/**
+ * Real Gmail. Needs a Google OAuth client id the user creates themselves — no
+ * shared credentials, and the token never leaves this tab.
+ */
+function buildGmailCard() {
+  const card = document.createElement('div');
+  card.className = `conn__card ${gmail.connected ? 'is-on' : 'is-off'}`;
+
+  const head = document.createElement('div');
+  head.className = 'conn__head';
+  const name = document.createElement('span');
+  name.className = 'conn__name';
+  name.textContent = 'Gmail — real inbox';
+  head.append(name);
+
+  const blurb = document.createElement('p');
+  blurb.className = 'conn__blurb';
+  blurb.textContent = gmail.connected
+    ? 'Connected. JARVIS can read and search your mail, and save drafts. It cannot send.'
+    : 'Read and search your actual inbox, and save real drafts. Needs a free Google OAuth client ID that you create — nothing is shared.';
+
+  const eg = document.createElement('p');
+  eg.className = 'conn__eg';
+  eg.textContent = gmail.connected
+    ? '"Jarvis, anything unread from my boss?"'
+    : 'Paste your client ID below, then sign in.';
+
+  card.append(head, blurb, eg);
+
+  if (!gmail.connected) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'conn__input';
+    input.placeholder = '1234-abc.apps.googleusercontent.com';
+    input.value = memory.settings.googleClientId || '';
+    input.addEventListener('change', () => {
+      memory.setSetting('googleClientId', input.value.trim());
+    });
+
+    const help = document.createElement('a');
+    help.className = 'conn__link';
+    help.href = 'https://console.cloud.google.com/apis/credentials';
+    help.target = '_blank';
+    help.rel = 'noopener';
+    help.textContent = 'Get a client ID →';
+
+    const signIn = document.createElement('button');
+    signIn.type = 'button';
+    signIn.className = 'conn__signin';
+    signIn.textContent = 'Sign in with Google';
+    signIn.addEventListener('click', () => {
+      memory.setSetting('googleClientId', input.value.trim());
+      if (!gmail.connect()) toast('Paste your Google client ID first.');
+    });
+
+    card.append(input, help, signIn);
+  } else {
+    const out = document.createElement('button');
+    out.type = 'button';
+    out.className = 'conn__signin';
+    out.textContent = 'Disconnect';
+    out.addEventListener('click', () => {
+      gmail.disconnect();
+      toast('Gmail disconnected.');
+    });
+    card.append(out);
+  }
+  return card;
 }
 
 function openConnectors() {
@@ -1047,6 +1129,11 @@ async function init() {
     });
   }
   // BUILD-STRIP-END
+
+  // Google may have just redirected back with a token in the fragment.
+  const adopted = gmail.adoptRedirect();
+  if (adopted?.error) toast(`Gmail sign-in failed: ${adopted.error}`);
+  else if (adopted?.token) toast('Gmail connected.');
 
   setupInstall();
 

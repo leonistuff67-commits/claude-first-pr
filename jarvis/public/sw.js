@@ -25,6 +25,7 @@ const SHELL = [
   './js/localbrain.js',
   './js/connectors.js',
   './js/providers.js',
+  './js/gmail.js',
   './js/clap.js',
   './js/recognizer.js',
   './js/voice.js',

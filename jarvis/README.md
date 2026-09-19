@@ -16,8 +16,10 @@ can actually run.
 - **Installs as a real app in one click.** Visit the hosted site, press Install, done —
   no terminal, no npm. It gets its own dock/taskbar icon and window, works fully
   offline, and keeps the wake word and dictation that native wrappers can't.
-- **Three brains, two of them free.** Pick in settings:
-  - **Claude** — needs an API key, by far the smartest.
+- **Nine AI providers.** Claude, OpenAI, Gemini, Groq, OpenRouter, DeepSeek,
+  Mistral, xAI, or Ollama on your own machine — each with its own key, in settings.
+- **Three kinds of brain, two of them free.** Pick in settings:
+  - **Cloud AI** — any of the providers above, using that provider's key.
   - **Local AI** — a real language model running *in your browser* on WebGPU. No key,
     no account, no cost; one download, then it works offline. Much smaller than Claude,
     but it genuinely converses and drives the tools.
@@ -154,6 +156,39 @@ hard reasoning.
 3. The prompt is trimmed for the local brain (8 memories instead of 40, no persona
    preamble) and replies are capped at 200 tokens, since every token is real latency.
 
+## Real Gmail access
+
+Beyond the deep-link hand-offs, JARVIS can read your **actual** inbox — search
+it, summarise it, and save real drafts — using a Google OAuth client **you**
+create. There are no shared credentials and no backend: the token lives in the
+tab and is never sent anywhere but Google.
+
+Setup, once:
+
+1. Open [Google Cloud credentials](https://console.cloud.google.com/apis/credentials),
+   create a project, and enable the **Gmail API**.
+2. Create an **OAuth client ID** of type *Web application*, and add the app's URL
+   (e.g. `https://leonistuff67-commits.github.io/claude-first-pr/`) as an
+   authorised JavaScript origin **and** redirect URI.
+3. Paste the client ID into the Gmail card on the Connectors page and sign in.
+
+Then: *"Jarvis, anything unread from my boss?"* or *"draft a reply saying I'll be
+late"*.
+
+The scopes are deliberately narrow — `gmail.readonly` and `gmail.compose`.
+**Sending is never requested**, so JARVIS physically cannot send mail on your
+behalf; it drafts, you press send. The token is checked against an anti-forgery
+`state` value and expires on its own.
+
+## Android
+
+The PWA installs as a real Android app straight from Chrome (menu → *Install
+app*) — own icon, own window, offline. For a packaged `.apk`, the **Build
+Android APK** workflow wraps the published PWA in a Trusted Web Activity with
+Bubblewrap; run it from the Actions tab and download the artifact. For a
+Play Store release you'd sign it with your own upload key and publish the
+resulting `assetlinks.json`.
+
 ## Connectors
 
 A web page cannot read your mailbox without a full Google OAuth setup — a Cloud
@@ -202,6 +237,8 @@ which every browser supports.
 | `public/js/wave.js` | The live voice spectrum bars. |
 | `public/js/mind.js` | The memory brain: graph wiring (pure, tested) plus the neural renderer. |
 | `public/js/connectors.js` | Deep-link hand-offs to Gmail, Calendar, Maps and friends. Pure URL builders. |
+| `public/js/providers.js` | Every non-Anthropic provider: OpenAI-shape adapter, tool translation. |
+| `public/js/gmail.js` | Real Gmail: OAuth flow, message parsing, draft encoding. |
 | `public/js/tools.js` | Tool schemas and their browser-side handlers. |
 | `public/js/memory.js` | `localStorage` state: settings, facts, tasks, conversation. |
 | `public/js/orb.js` | The canvas visualizer. |
@@ -237,6 +274,7 @@ npm run test:offline  # built jarvis.html with NO key: tools run locally, networ
 npm run test:clap     # feeds a real two-clap WAV through the mic and checks detection
 npm run test:mind     # the memory brain: neurons, synapses, hover readout, search, hotkeys
 npm run test:conn     # the connectors page: listing, toggles persisting, URL shape
+npm run test:providers # the provider picker: per-provider keys, models, visibility
 npm run test:update   # regression: an installed app must pick up a new build
 npm run test:pwa      # manifest + service worker, then boots with the server killed
 npm run test:all      # everything above in sequence
