@@ -145,10 +145,23 @@ jobs:
       - name: Build the APK
         working-directory: twa
         timeout-minutes: 20
-        run: bubblewrap build --skipPwaValidation < /dev/null
+        run: |
+          set -o pipefail
+          bubblewrap build --skipPwaValidation < /dev/null 2>&1 | tee build.log
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: jarvis123
           BUBBLEWRAP_KEY_PASSWORD: jarvis123
+
+      # Gradle buries the one useful line under a hundred frames of its own
+      # stack, which is unreadable in the Actions log. Pull it back out.
+      - name: Explain a build failure
+        if: failure()
+        working-directory: twa
+        run: |
+          echo '=== what went wrong ==='
+          grep -A 20 'What went wrong' build.log || true
+          echo '=== errors ==='
+          grep -E '^(e: |error:|FAILURE|\* Try|> )' build.log | head -40 || true
 
       - name: Report the signing fingerprint
         if: always()
