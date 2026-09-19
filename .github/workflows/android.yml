@@ -60,15 +60,26 @@ jobs:
         with:
           packages: 'platform-tools'
 
-      # Bubblewrap reaches for a specific build-tools version depending on its
-      # own version, so install the ones it is known to ask for rather than
-      # guessing a single one.
+      # Bubblewrap 1.25 pins build-tools 36.1.0 and generates a project that
+      # compiles against SDK 36, so those are what it needs present.
       - name: Install build tools and platforms
         run: |
           sdkmanager --install \
-            'platforms;android-35' 'platforms;android-34' 'platforms;android-33' \
-            'build-tools;35.0.0' 'build-tools;34.0.0' 'build-tools;33.0.2'
+            'platforms;android-36' 'platforms;android-35' \
+            'build-tools;36.1.0' 'build-tools;35.0.0'
           yes | sdkmanager --licenses > /dev/null || true
+
+      # Bubblewrap checks for <sdk>/tools or <sdk>/bin and rejects the SDK
+      # outright if it finds neither ("The provided androidSdk isn't correct").
+      # The runner's SDK keeps those binaries under cmdline-tools/<version>/bin,
+      # so point <sdk>/bin at them — that is also where Bubblewrap looks for
+      # sdkmanager when it wants to install something itself.
+      - name: Give the SDK the layout Bubblewrap expects
+        run: |
+          sdkmanager_bin="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f | head -1)"
+          test -n "$sdkmanager_bin" || { echo 'no sdkmanager under cmdline-tools'; exit 1; }
+          ln -sfn "$(dirname "$sdkmanager_bin")" "$ANDROID_SDK_ROOT/bin"
+          "$ANDROID_SDK_ROOT/bin/sdkmanager" --version
 
       - name: Install Bubblewrap
         run: npm install -g @bubblewrap/cli
