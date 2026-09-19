@@ -6,6 +6,7 @@
 import { memory } from './memory.js';
 import { connectorTools, findConnectorTool } from './connectors.js';
 import { buildAppUrl, appTool, describeOpen } from './apps.js';
+import { desktopAvailable, desktopTools, desktopHandlers } from './desktop.js';
 
 const timers = new Map();
 
@@ -348,6 +349,9 @@ export function createTools(ctx) {
   function allDefinitions() {
     const list = [...defs, appTool(), ...connectorTools(memory.settings.connectors || {})];
     if (ctx.gmail?.connected) list.push(...inboxDefs);
+    // Only offered when running as the desktop app; in a tab there is nothing
+    // on the other side of the bridge to call.
+    if (desktopAvailable()) list.push(...desktopTools());
     return list;
   }
 
@@ -373,7 +377,7 @@ export function createTools(ctx) {
         }
       }
 
-      const fn = handlers[name];
+      const fn = handlers[name] || (desktopAvailable() ? desktopHandlers()[name] : null);
       if (!fn) return `Unknown tool "${name}".`;
       try {
         return String(await fn(input || {}));

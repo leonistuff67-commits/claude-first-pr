@@ -1,0 +1,58 @@
+# Build JARVIS as a Windows application.
+#
+# Unlike the PWA and the APK — both of which are the web page in a frame — this
+# produces a real .exe: an Electron shell whose main process holds the only
+# access to the machine, handing the renderer a narrow, permission-gated bridge.
+#
+# Run it from the Actions tab. Two artifacts come out: an installer (JARVIS
+# Setup x.y.z.exe) and a portable build that runs without installing.
+name: Build Windows app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, main]
+    paths:
+      - 'jarvis-desktop/**'
+      - 'jarvis/public/**'
+      - '.github/workflows/windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The permission gate is the part worth being sure about, so it runs
+      # before anything is packaged.
+      - name: Test the permission model and app resolution
+        working-directory: jarvis-desktop
+        run: npm test
+
+      - name: Test the desktop tools
+        working-directory: jarvis
+        run: node --test test/desktop.test.mjs
+
+      - name: Install
+        working-directory: jarvis-desktop
+        run: npm install
+
+      - name: Build the installer
+        working-directory: jarvis-desktop
+        run: npm run dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-windows
+          path: |
+            jarvis-desktop/dist/*.exe
+            jarvis-desktop/dist/*.blockmap
+          if-no-files-found: error
