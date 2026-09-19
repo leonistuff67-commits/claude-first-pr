@@ -33,7 +33,7 @@ const el = {
   statStatus: $('stat-status'), statModel: $('stat-model'), statLink: $('stat-link'), statVoice: $('stat-voice'),
   timers: $('timers'), tasks: $('tasks'), facts: $('facts'),
   taskCount: $('task-count'), factCount: $('fact-count'),
-  toast: $('toast'), wipeBtn: $('wipe-btn'),
+  toast: $('toast'), wipeBtn: $('wipe-btn'), exportBtn: $('export-btn'),
   mind: $('mind'), mindCanvas: $('mind-canvas'), mindSearch: $('mind-search'),
   mindClose: $('mind-close'), mindDetail: $('mind-detail'), mindStats: $('mind-stats'),
   brainBtn: $('brain-btn'),
@@ -770,6 +770,22 @@ function wireSettings() {
     loadVoiceOptions();
     syncSettingsControls();
     el.settings.showModal();
+  });
+
+  // Hand the brain over to whatever else is running JARVIS — the desktop MCP
+  // server takes this file as-is. Facts and tasks only: the settings hold API
+  // keys and the history is this browser's business.
+  el.exportBtn.addEventListener('click', () => {
+    const brain = { facts: memory.facts, tasks: memory.tasks, exportedAt: new Date().toISOString() };
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(brain, null, 2)], { type: 'application/json' }),
+    );
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'jarvis-brain.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast(`Exported ${brain.facts.length} facts and ${brain.tasks.length} tasks.`);
   });
 
   el.wipeBtn.addEventListener('click', () => {

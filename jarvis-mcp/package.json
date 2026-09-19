@@ -1,0 +1,16 @@
+{
+  "name": "jarvis-mcp",
+  "version": "1.0.0",
+  "description": "JARVIS's memory and persona as an MCP server, for hosts that already have computer control.",
+  "type": "module",
+  "bin": { "jarvis-mcp": "server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "import": "node scripts/import-brain.mjs",
+    "test": "node --test test/brain.test.mjs test/store.test.mjs && node test/server.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
+  "license": "MIT"
+}
