@@ -72,13 +72,20 @@ jobs:
       # Bubblewrap checks for <sdk>/tools or <sdk>/bin and rejects the SDK
       # outright if it finds neither ("The provided androidSdk isn't correct").
       # The runner's SDK keeps those binaries under cmdline-tools/<version>/bin,
-      # so point <sdk>/bin at them — that is also where Bubblewrap looks for
-      # sdkmanager when it wants to install something itself.
+      # which is also where Bubblewrap looks for sdkmanager if it decides to
+      # install something itself.
+      #
+      # A symlinked directory is no good here: sdkmanager's launcher finds its
+      # own jars relative to where it was invoked from, so reaching it through
+      # <sdk>/bin leaves it hunting for classes in the wrong place. A one-line
+      # wrapper pointing at the real script satisfies the check and still runs.
       - name: Give the SDK the layout Bubblewrap expects
         run: |
-          sdkmanager_bin="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f | head -1)"
-          test -n "$sdkmanager_bin" || { echo 'no sdkmanager under cmdline-tools'; exit 1; }
-          ln -sfn "$(dirname "$sdkmanager_bin")" "$ANDROID_SDK_ROOT/bin"
+          real="$(find "$ANDROID_SDK_ROOT/cmdline-tools" -name sdkmanager -type f | head -1)"
+          test -n "$real" || { echo 'no sdkmanager under cmdline-tools'; exit 1; }
+          mkdir -p "$ANDROID_SDK_ROOT/bin"
+          printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$real" > "$ANDROID_SDK_ROOT/bin/sdkmanager"
+          chmod +x "$ANDROID_SDK_ROOT/bin/sdkmanager"
           "$ANDROID_SDK_ROOT/bin/sdkmanager" --version
 
       - name: Install Bubblewrap
