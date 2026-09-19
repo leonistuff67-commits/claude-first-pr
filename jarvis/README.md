@@ -189,6 +189,25 @@ Bubblewrap; run it from the Actions tab and download the artifact. For a
 Play Store release you'd sign it with your own upload key and publish the
 resulting `assetlinks.json`.
 
+### Opening apps
+
+On a phone, JARVIS can open your installed apps with the text already filled
+in — Spotify, YouTube, Maps, WhatsApp, Messages, the dialler, Telegram, Gmail,
+Calendar, Instagram and Keep. *"Text Dan that I'll be ten minutes late"* opens
+Messages with that typed; *"play Radiohead on Spotify"* opens the app on that
+search.
+
+This uses app URL schemes (`whatsapp://`, `spotify:`, `sms:`, `tel:`), which is
+ordinary app-to-app linking — no accessibility service, no screen reading, no
+special permissions. Each app has a web fallback, so a missing app is never a
+dead end, and nothing is ever sent or dialled automatically: the app opens
+ready and you press the button.
+
+What this deliberately is **not**: control of the device. JARVIS cannot click
+around inside another app, read your screen, or drive the OS. Those need the
+Android Accessibility API, which Play policy restricts to genuine accessibility
+use and which is the same mechanism Android banking trojans abuse.
+
 ## Connectors
 
 A web page cannot read your mailbox without a full Google OAuth setup — a Cloud

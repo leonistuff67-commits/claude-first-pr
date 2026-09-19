@@ -14,7 +14,7 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
 
 /** Dependency order: each module may use everything above it. */
-const MODULES = ['memory.js', 'connectors.js', 'tools.js', 'brain.js', 'offline.js', 'clap.js', 'recognizer.js', 'voice.js', 'orb.js', 'wave.js', 'mind.js', 'providers.js', 'gmail.js', 'localbrain.js', 'app.js'];
+const MODULES = ['memory.js', 'connectors.js', 'apps.js', 'tools.js', 'brain.js', 'offline.js', 'clap.js', 'recognizer.js', 'voice.js', 'orb.js', 'wave.js', 'mind.js', 'providers.js', 'gmail.js', 'localbrain.js', 'app.js'];
 
 function stripModuleSyntax(source, name) {
   // Drop anything the standalone file can't use (e.g. service-worker
@@ -57,6 +57,29 @@ html = html.replace(
   '<script type="module" src="js/app.js"></script>',
   `<script>\n(function () {\n'use strict';\n\n${scripts.join('\n')}\n}());\n</script>`,
 );
+
+// Everything is concatenated into one scope, so two modules declaring the same
+// top-level name is a silent, fatal collision at runtime ("Identifier 'enc' has
+// already been declared"). Catch it at build time instead.
+const declared = new Map();
+const DECL = /^(?:export\s+)?(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/;
+for (const [i, name] of MODULES.entries()) {
+  const source = await fs.readFile(path.join(PUBLIC, 'js', name), 'utf8');
+  for (const line of source.split('\n')) {
+    const match = DECL.exec(line);
+    if (!match) continue;
+    const ident = match[1];
+    const owner = declared.get(ident);
+    if (owner && owner !== name) {
+      throw new Error(
+        `bundle collision: "${ident}" is declared at the top level of both ${owner} and ${name}. `
+        + 'Rename one — concatenation puts them in the same scope.',
+      );
+    }
+    declared.set(ident, name);
+  }
+}
+void 0;
 
 // Guard against a module or PWA reference slipping through into the bundle.
 for (const marker of ['from \'./', 'type="module"', 'href="css/', 'rel="manifest"', 'serviceWorker']) {

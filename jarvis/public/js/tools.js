@@ -5,6 +5,7 @@
  */
 import { memory } from './memory.js';
 import { connectorTools, findConnectorTool } from './connectors.js';
+import { buildAppUrl, appTool, describeOpen } from './apps.js';
 
 const timers = new Map();
 
@@ -248,6 +249,26 @@ export function createTools(ctx) {
       return `Opened ${parsed.href}.`;
     },
 
+    open_app({ app, ...params }) {
+      let built;
+      try {
+        built = buildAppUrl(app, params, navigator.userAgent);
+      } catch (err) {
+        return err.message;
+      }
+      // A native scheme fails silently when the app isn't installed, so fall
+      // back to the website shortly after.
+      const opened = window.open(built.url, '_blank', 'noopener');
+      if (built.url !== built.fallback) {
+        setTimeout(() => {
+          if (!document.hidden) window.open(built.fallback, '_blank', 'noopener');
+        }, 1200);
+      }
+      if (!opened && built.url === built.fallback) return 'The browser blocked that pop-up.';
+      ctx.notify?.(`Opened ${built.app.name}`);
+      return describeOpen(app, params);
+    },
+
     async read_inbox({ query = 'in:inbox', max = 8 }) {
       if (!ctx.gmail?.connected) return 'Gmail is not connected. Open the Connectors page to sign in.';
       const messages = await ctx.gmail.search(query, max);
@@ -325,7 +346,7 @@ export function createTools(ctx) {
 
   /** Built-in tools plus whichever connectors are switched on. */
   function allDefinitions() {
-    const list = [...defs, ...connectorTools(memory.settings.connectors || {})];
+    const list = [...defs, appTool(), ...connectorTools(memory.settings.connectors || {})];
     if (ctx.gmail?.connected) list.push(...inboxDefs);
     return list;
   }

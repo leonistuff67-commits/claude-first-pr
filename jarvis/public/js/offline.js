@@ -145,6 +145,25 @@ function interpret(raw) {
       ? { tool: 'get_directions', input: { destination } }
       : { text: 'Where do you want to go?' };
   }
+  // "open spotify", "text dan ...", "call the dentist"
+  const appMatch = t.match(/\b(?:open|launch|start)\s+(spotify|youtube|maps|whatsapp|telegram|gmail|calendar|instagram|notes|phone)\b/);
+  if (appMatch) return { tool: 'open_app', input: { app: appMatch[1] } };
+
+  if (/\btext\b|\bmessage\b/.test(t) && !/\bemail\b/.test(t)) {
+    const body = text.replace(/^.*?\b(?:text|message)\b\s*/i, '').replace(/^\w+\s+(?:that|saying)\s*/i, '');
+    return { tool: 'open_app', input: { app: 'sms', text: body || text } };
+  }
+  if (/\bcall\b/.test(t)) {
+    const digits = (text.match(/[\d+][\d\s()-]{5,}/) || [''])[0].trim();
+    return digits
+      ? { tool: 'open_app', input: { app: 'phone', phone: digits } }
+      : { text: 'What number should I bring up?' };
+  }
+  if (/\bplay\b.*\bspotify\b|\bspotify\b.*\bplay\b/.test(t)) {
+    const query = text.replace(/^.*?\bplay\b\s*/i, '').replace(/\bon spotify\b/i, '').trim();
+    return { tool: 'open_app', input: { app: 'spotify', query } };
+  }
+
   if (/\b(play|put on)\b/.test(t) && !/\btimer\b/.test(t)) {
     const query = text.replace(/^.*?\b(play|put on)\b\s*/i, '').trim();
     return query ? { tool: 'play_video', input: { query } } : { text: 'Play what?' };
